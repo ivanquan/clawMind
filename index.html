@@ -1,0 +1,1220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClawMind - 个人AI智能学习工作站</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <span class="logo-icon">🧠</span>
+                <span class="logo-text">ClawMind</span>
+            </div>
+            <p class="logo-tagline" title="ClawMind 产品定位">一个集<strong>学习资料</strong>、<strong>日程</strong>与<strong>年度目标</strong>管理，并配套 <strong>AI 工作区</strong>与<strong>题库复习</strong>的个人学习网站。</p>
+
+            <nav class="nav-menu">
+                <a href="#" class="nav-item active" data-page="dashboard">
+                    <span class="nav-icon">🏠</span>
+                    <span class="nav-label">首页</span>
+                </a>
+                <a href="#" class="nav-item" data-page="library">
+                    <span class="nav-icon">📚</span>
+                    <span class="nav-label">图书馆</span>
+                </a>
+                <a href="#" class="nav-item" data-page="workspace">
+                    <span class="nav-icon">✏️</span>
+                    <span class="nav-label">工作区</span>
+                </a>
+                <a href="#" class="nav-item" data-page="scheduler">
+                    <span class="nav-icon">📅</span>
+                    <span class="nav-label">日程中心</span>
+                </a>
+                <a href="#" class="nav-item" data-page="goals">
+                    <span class="nav-icon">🎯</span>
+                    <span class="nav-label">目标中心</span>
+                </a>
+                <a href="#" class="nav-item" data-page="question-bank">
+                    <span class="nav-icon">🎲</span>
+                    <span class="nav-label">随机题库</span>
+                </a>
+                <a href="#" class="nav-item" data-page="settings">
+                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-label">设置</span>
+                </a>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="user-info">
+                    <div class="user-avatar">👤</div>
+                    <div class="user-name" id="user-name-display">未登录</div>
+                </div>
+                <button class="btn-secondary" id="auth-action-btn" onclick="handleAuthAction()">登录</button>
+            </div>
+        </aside>
+        
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 首页 Dashboard -->
+            <div id="page-dashboard" class="page active">
+                <header class="page-header">
+                    <div>
+                        <h1>欢迎回来 <span id="welcome-username">学习者</span> 👋</h1>
+                        <p class="page-subtitle">今天是学习的好日子</p>
+                    </div>
+                    <div class="header-right">
+                        <div class="daily-quote" id="daily-quote">“坚持不是一口气冲到底，而是每天都不放弃。”</div>
+                        <button class="btn-secondary" onclick="refreshDailyQuote()">✨ 换一句</button>
+                    </div>
+                </header>
+                
+                <!-- 统计卡片 -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">📄</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="stat-files">1</div>
+                            <div class="stat-label">学习资料</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📝</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="stat-vocab">22</div>
+                            <div class="stat-label">已学词汇</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">📖</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="stat-notes">1</div>
+                            <div class="stat-label">学习笔记</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">✅</div>
+                        <div class="stat-info">
+                            <div class="stat-value" id="stat-tasks">3</div>
+                            <div class="stat-label">完成任务</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="dashboard-grid">
+                    <!-- 继续学习 -->
+                    <div class="card continue-card">
+                        <h2 class="card-title">📖 继续学习</h2>
+                        <div id="continue-learning-container"></div>
+                    </div>
+                    
+                    <!-- 今日待办 -->
+                    <div class="card todo-card">
+                        <h2 class="card-title">✅ 今日待办</h2>
+                        <div class="todo-list" id="today-todos"></div>
+                        <button class="add-btn" onclick="showAddTodo()">+ 添加任务</button>
+                    </div>
+                    
+                    <!-- 学习热力图 -->
+                    <div class="card heatmap-card">
+                        <h2 class="card-title">🔥 学习热力图</h2>
+                        <div class="heatmap-grid" id="heatmap">
+                            <!-- JS 生成 -->
+                        </div>
+                        <div class="heatmap-legend">
+                            <span>少</span>
+                            <div class="legend-boxes">
+                                <div class="legend-box" style="background: #1a1a2e"></div>
+                                <div class="legend-box" style="background: #2d1f3d"></div>
+                                <div class="legend-box" style="background: #4a1942"></div>
+                                <div class="legend-box" style="background: #e94560"></div>
+                            </div>
+                            <span>多</span>
+                        </div>
+                    </div>
+                    
+                    <!-- 复习提醒 -->
+                    <div class="card review-card">
+                        <h2 class="card-title">🔄 艾宾浩斯复习</h2>
+                        <div class="review-timeline" id="review-timeline"></div>
+                        <p class="review-summary" id="review-summary"></p>
+                    </div>
+
+                    <div class="card goal-home-card">
+                        <h2 class="card-title">🎯 目标进度</h2>
+                        <div class="goal-home-meta">
+                            <span class="note-meta" id="goal-home-period">当前季度</span>
+                            <span class="note-meta" id="goal-home-year">年度目标 0 个</span>
+                        </div>
+                        <div class="goal-progress">
+                            <div class="goal-progress-bar"><span id="goal-home-progress-bar" style="width:0%"></span></div>
+                            <div class="goal-progress-text" id="goal-home-progress">0%</div>
+                        </div>
+                        <div class="note-meta">待完成任务：<span id="goal-home-pending">0</span></div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 图书馆页面 -->
+            <div id="page-library" class="page">
+                <header class="page-header">
+                    <h1>📚 图书馆</h1>
+                    <div class="header-actions">
+                        <button class="btn-primary" onclick="showUploadModal()">
+                            <span>📤</span> 上传文件
+                        </button>
+                        <button class="btn-secondary" onclick="showNewCategory()">
+                            <span>📁</span> 新建分类
+                        </button>
+                        <button class="btn-secondary" onclick="renameCurrentCategory()">
+                            <span>✏️</span> 重命名分类
+                        </button>
+                        <button class="btn-danger" onclick="deleteCurrentCategory()">
+                            <span>🗑️</span> 删除分类
+                        </button>
+                    </div>
+                </header>
+
+                <div class="library-tools">
+                    <select id="library-sort-select" class="setting-input">
+                        <option value="learned_desc">按学习时间（最近优先）</option>
+                        <option value="learned_asc">按学习时间（最早优先）</option>
+                        <option value="added_desc">按加入时间（最近优先）</option>
+                        <option value="added_asc">按加入时间（最早优先）</option>
+                    </select>
+                    <select id="library-status-filter" class="setting-input">
+                        <option value="all">全部状态</option>
+                        <option value="unlearned">未学习</option>
+                        <option value="in_progress">学习中</option>
+                        <option value="completed">已学习完</option>
+                    </select>
+                    <select id="library-page-size" class="setting-input">
+                        <option value="8">每页 8 项</option>
+                        <option value="12">每页 12 项</option>
+                        <option value="18">每页 18 项</option>
+                        <option value="24">每页 24 项</option>
+                    </select>
+                    <div class="library-selection-actions">
+                        <button class="btn-secondary" id="library-select-toggle" onclick="toggleLibrarySelection()">批量选择</button>
+                        <button class="btn-secondary" id="library-select-all" onclick="selectAllLibraryFiles()">全选</button>
+                        <button class="btn-secondary" id="library-select-clear" onclick="clearLibrarySelection()">清空选择</button>
+                        <button class="btn-danger" id="library-select-delete" onclick="deleteSelectedLibraryFiles()">删除所选</button>
+                    </div>
+                </div>
+                
+                <div class="library-layout">
+                    <!-- 分类侧边栏 -->
+                    <div class="category-sidebar">
+                        <h3 class="section-title">📂 分类树</h3>
+                        <div class="category-list category-tree" id="category-tree"></div>
+                    </div>
+                    
+                    <!-- 文件网格 -->
+                    <div class="files-panel">
+                        <div class="files-grid compact" id="files-grid"></div>
+                        <div class="files-pagination" id="files-pagination">
+                            <button class="page-btn" id="files-prev-btn" onclick="changeLibraryPage(-1)">上一页</button>
+                            <span class="page-info" id="files-page-info"></span>
+                            <button class="page-btn" id="files-next-btn" onclick="changeLibraryPage(1)">下一页</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 工作区页面 -->
+            <div id="page-workspace" class="page">
+                <header class="page-header">
+                    <h1>✏️ 智能工作区</h1>
+                    <div class="header-actions">
+                        <select class="setting-input" id="workspace-file-select" style="min-width: 260px;"></select>
+                        <span class="workspace-path" id="workspace-path-display"></span>
+                        <button class="btn-secondary" id="workspace-complete-btn" onclick="toggleLearningComplete()">✅ 标记学习完成</button>
+                        <button class="btn-secondary" onclick="applyHighlightFromSelection()">🖍️ 高亮</button>
+                        <button class="btn-secondary" onclick="captureSelectionAsNote()">📝 选中做笔记</button>
+                        <button class="btn-primary" onclick="saveWorkspaceProgress()">💾 保存学习进度</button>
+                        <button class="btn-secondary" onclick="extractArticleToQuestionBank()">✨ 一键提炼</button>
+                        <button class="btn-vibe" onclick="toggleVibeMode()">
+                            <span>🎵</span> Vibe Mode
+                        </button>
+                    </div>
+                </header>
+                
+                <div class="workspace-layout">
+                    <!-- 文档阅读器 -->
+                    <div class="document-reader">
+                        <div class="reader-header">
+                            <h2 id="doc-title">你不必强迫自己积极向上</h2>
+                            <span class="save-status" id="workspace-save-status">未保存</span>
+                            <div class="reader-controls">
+                                <button class="control-btn" onclick="prevPage()">◀</button>
+                                <span id="page-indicator">1 / 12</span>
+                                <button class="control-btn" onclick="nextPage()">▶</button>
+                            </div>
+                        </div>
+                        <div class="reader-content" id="reader-content"></div>
+                    </div>
+                    
+                    <!-- AI 笔记侧边栏 -->
+                    <div class="ai-sidebar">
+                        <div class="sidebar-tabs">
+                            <button class="tab-btn active" data-tab="notes">📝 笔记</button>
+                            <button class="tab-btn" data-tab="vocab">📚 词汇</button>
+                        </div>
+                        
+                        <!-- 笔记面板 -->
+                        <div class="tab-panel active" id="panel-notes">
+                            <div class="notes-tools">
+                                <input type="text" class="setting-input" id="notes-search" placeholder="搜索笔记/释义..." oninput="handleNotesSearch()">
+                                <select class="setting-input" id="notes-sort" onchange="changeNotesSort()">
+                                    <option value="newest" selected>最新优先</option>
+                                    <option value="oldest">最早优先</option>
+                                </select>
+                                <button class="btn-secondary" id="notes-select-toggle" onclick="toggleNotesSelection()">批量选择</button>
+                                <button class="btn-secondary" id="notes-select-all" onclick="selectAllNotes()">全选</button>
+                                <button class="btn-secondary" id="notes-select-clear" onclick="clearNotesSelection()">清空</button>
+                                <button class="btn-danger" id="notes-select-delete" onclick="deleteSelectedNotes()">删除所选</button>
+                            </div>
+                            <div class="notes-list" id="notes-list"></div>
+                            <div class="notes-pagination" id="notes-pagination">
+                                <button class="page-btn" id="notes-prev-btn" onclick="changeNotesPage(-1)">上一页</button>
+                                <span class="page-info" id="notes-page-info"></span>
+                                <button class="page-btn" id="notes-next-btn" onclick="changeNotesPage(1)">下一页</button>
+                                <select class="setting-input" id="notes-page-size" onchange="changeNotesPageSize()">
+                                    <option value="6">每页 6 条</option>
+                                    <option value="10" selected>每页 10 条</option>
+                                    <option value="16">每页 16 条</option>
+                                </select>
+                            </div>
+                            <textarea class="note-input" id="note-input" placeholder="在这里写笔记..."></textarea>
+                            <button class="btn-secondary" onclick="addManualNote()">添加笔记</button>
+                        </div>
+                        
+                        <!-- 词汇面板 -->
+                        <div class="tab-panel" id="panel-vocab">
+                            <div class="vocab-actions">
+                                <button class="btn-secondary" onclick="addSelectionToVocab()">📚 添加做词汇</button>
+                                <button class="btn-secondary" onclick="addCustomVocab()">➕ 手动新增词汇</button>
+                            </div>
+                            <div class="vocab-list" id="vocab-list"></div>
+                            <div class="vocab-pagination" id="vocab-pagination">
+                                <button class="page-btn" id="vocab-prev-btn" onclick="changeVocabPage(-1)">上一页</button>
+                                <span class="page-info" id="vocab-page-info"></span>
+                                <button class="page-btn" id="vocab-next-btn" onclick="changeVocabPage(1)">下一页</button>
+                                <select class="setting-input" id="vocab-page-size" onchange="changeVocabPageSize()">
+                                    <option value="6">每页 6 条</option>
+                                    <option value="10" selected>每页 10 条</option>
+                                    <option value="16">每页 16 条</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                    </div>
+                </div>
+                <div class="assistant-toggle" id="assistant-toggle" onclick="toggleDocAssistant()">
+                    <span>🤖</span>
+                    <span>助手</span>
+                </div>
+                <aside class="assistant-panel" id="assistant-panel">
+                    <div class="assistant-header">
+                        <div class="assistant-title">文档智能助手</div>
+                        <button class="assistant-close" onclick="toggleDocAssistant(false)">×</button>
+                    </div>
+                    <div class="assistant-body">
+                        <div class="assistant-meta">
+                            <span class="chat-mode-tip" id="chat-mode-tip">当前模式：文档智能助手</span>
+                            <button class="btn-secondary chat-clear-btn" onclick="clearChatMessages()">清空对话</button>
+                        </div>
+                        <div class="chat-messages" id="chat-messages"></div>
+                    </div>
+                    <div class="assistant-input">
+                        <input type="text" class="chat-input" id="chat-input" placeholder="输入问题（优先基于当前页内容）...">
+                        <button class="send-btn" onclick="sendChat()">发送</button>
+                    </div>
+                </aside>
+            </div>
+            
+            <!-- 日程中心页面 -->
+            <div id="page-scheduler" class="page">
+                <header class="page-header">
+                    <h1>📅 日程中心</h1>
+                    <div class="header-actions">
+                        <button class="btn-primary" onclick="showTaskPlanModal()">
+                            <span>➕</span> 添加任务
+                        </button>
+                    </div>
+                </header>
+                
+                <div class="scheduler-layout">
+                    <!-- 日历 -->
+                    <div class="calendar-section">
+                        <div class="calendar-header">
+                            <button class="cal-nav" onclick="prevMonth()">◀</button>
+                            <h2 id="calendar-title">2026年3月</h2>
+                            <button class="cal-nav" onclick="nextMonth()">▶</button>
+                        </div>
+                        <div class="calendar-grid" id="calendar-grid">
+                            <!-- JS 生成 -->
+                        </div>
+                    </div>
+                    
+                    <!-- 任务列表 -->
+                    <div class="tasks-section">
+                        <h2 class="section-title">📋 学习任务</h2>
+                        <p class="task-filter-hint" id="task-filter-hint">单击日历日期可查看当天任务，双击可快速添加任务。</p>
+                        <div class="task-list" id="task-list"></div>
+                        <div class="task-pagination" id="task-pagination">
+                            <button class="page-btn" id="task-prev-btn" onclick="changeTaskPage(-1)">上一页</button>
+                            <span class="page-info" id="task-page-info"></span>
+                            <button class="page-btn" id="task-next-btn" onclick="changeTaskPage(1)">下一页</button>
+                            <select class="setting-input" id="task-page-size" onchange="changeTaskPageSize()">
+                                <option value="6">每页 6 项</option>
+                                <option value="10" selected>每页 10 项</option>
+                                <option value="16">每页 16 项</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- 复习计划 -->
+                    <div class="review-plan-section">
+                        <h2 class="section-title">🔄 艾宾浩斯复习计划</h2>
+                        <div class="ebbinghaus-chart" id="ebbinghaus-chart"></div>
+                        <p class="chart-desc" id="ebbinghaus-chart-desc"></p>
+                    </div>
+
+                </div>
+            </div>
+
+            <div id="page-goals" class="page">
+                <header class="page-header">
+                    <h1>🎯 目标中心</h1>
+                    <div class="header-actions">
+                        <button class="btn-secondary" onclick="openYearGoalModal('create')">新增年度目标</button>
+                        <button class="btn-primary" onclick="openQuarterGoalModal('create')">新增季度目标</button>
+                    </div>
+                </header>
+                <div class="goals-layout">
+                    <div class="goals-section" id="goal-summary-section">
+                        <div class="section-head">
+                            <h2 class="section-title">本季度提醒</h2>
+                            <span class="note-meta" id="goal-summary-period"></span>
+                        </div>
+                        <div class="goals-summary-grid">
+                            <div class="stat-card">
+                                <div class="stat-icon">⏳</div>
+                                <div>
+                                    <div class="stat-value" id="goal-summary-days">0</div>
+                                    <div class="note-meta">剩余天数</div>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-icon">🎯</div>
+                                <div>
+                                    <div class="stat-value" id="goal-summary-progress">0%</div>
+                                    <div class="note-meta">目标进度</div>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-icon">📌</div>
+                                <div>
+                                    <div class="stat-value" id="goal-summary-pending">0</div>
+                                    <div class="note-meta">待完成任务</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="goal-summary-progress">
+                            <div class="goal-progress-bar"><span id="goal-summary-progress-bar" style="width:0%"></span></div>
+                            <div class="goal-progress-text" id="goal-summary-progress-text">0%</div>
+                        </div>
+                        <div class="goal-warning" id="goal-warning"></div>
+                    </div>
+                    <div class="goals-section" id="year-goals-section">
+                        <div class="section-head">
+                            <h2 class="section-title">年度方向</h2>
+                        </div>
+                        <div class="goal-list" id="year-goals-list"></div>
+                    </div>
+                    <div class="goals-section" id="quarter-goals-section">
+                        <div class="section-head">
+                            <h2 class="section-title">当前季度 OKR</h2>
+                            <div class="section-actions">
+                                <select class="setting-input" id="goal-quarter-select" onchange="changeGoalPeriod()"></select>
+                                <span class="note-meta">支持添加多个目标</span>
+                            </div>
+                        </div>
+                        <div class="quarter-layout">
+                            <div class="goal-list" id="quarter-goal-list"></div>
+                            <div class="goal-detail" id="quarter-goal-detail"></div>
+                        </div>
+                    </div>
+                    <div class="goals-section" id="quarter-review-section">
+                        <div class="section-head">
+                            <h2 class="section-title">季度复盘</h2>
+                            <button class="btn-primary" onclick="saveQuarterReview()">保存复盘</button>
+                        </div>
+                        <div class="review-summary" id="quarter-review-summary"></div>
+                        <div class="review-grid">
+                            <div class="setting-item">
+                                <label>关键成果与完成度</label>
+                                <textarea class="setting-input review-input" id="quarter-review-achievements" placeholder="记录本季度达成的关键成果..."></textarea>
+                            </div>
+                            <div class="setting-item">
+                                <label>做得好的</label>
+                                <textarea class="setting-input review-input" id="quarter-review-highlights" placeholder="哪些动作效果最好？"></textarea>
+                            </div>
+                            <div class="setting-item">
+                                <label>问题与原因</label>
+                                <textarea class="setting-input review-input" id="quarter-review-lowlights" placeholder="遇到的问题与根因分析..."></textarea>
+                            </div>
+                            <div class="setting-item">
+                                <label>下季度调整</label>
+                                <textarea class="setting-input review-input" id="quarter-review-adjustments" placeholder="下一季度的调整与策略..."></textarea>
+                            </div>
+                            <div class="setting-item">
+                                <label>下一步行动</label>
+                                <textarea class="setting-input review-input" id="quarter-review-next-actions" placeholder="可以直接拆成行动计划..."></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 随机题库页面 -->
+            <div id="page-question-bank" class="page">
+                <header class="page-header">
+                    <h1>🎲 随机题库</h1>
+                    <div class="header-actions">
+                        <button class="btn-secondary" onclick="showQuestionBankModal()">添加知识点</button>
+                        <button class="btn-secondary" onclick="showAddQuestionCategoryPrompt()">新增分类</button>
+                        <button class="btn-secondary" onclick="showQuestionBatchImportModal()">批量导入</button>
+                    </div>
+                </header>
+                <div class="random-bank-section">
+                    <h2 class="section-title">📘 题库抽取复习</h2>
+                    <div class="random-bank-controls">
+                        <select class="setting-input" id="question-category-select">
+                            <option value="all">全部分类</option>
+                        </select>
+                        <select class="setting-input" id="question-source-filter">
+                            <option value="all">全部来源</option>
+                            <option value="manual">手动添加</option>
+                            <option value="extract">一键提炼</option>
+                            <option value="rag-local">RAG本地</option>
+                            <option value="rag-remote">RAG远端</option>
+                            <option value="auto-note">自动笔记同步</option>
+                            <option value="auto-highlight">自动高亮同步</option>
+                        </select>
+                        <input type="number" class="setting-input" id="random-count" min="1" max="50" value="10">
+                        <button class="btn-secondary" onclick="openQuestionCategoryEditModal()">编辑分类</button>
+                        <button class="btn-danger" onclick="deleteQuestionCategory()">删除分类</button>
+                        <button class="btn-primary" onclick="drawRandomQuestions()">随机抽取</button>
+                        <button class="btn-secondary" onclick="renderAllByCount()">按数量直接罗列</button>
+                    </div>
+                    <div class="random-summary" id="random-summary">题库已加载，点击“随机抽取”开始复习。</div>
+                    <div class="random-question-list" id="random-question-list"></div>
+                    <div class="files-pagination" id="random-pagination">
+                        <button class="page-btn" id="random-prev-btn" onclick="changeRandomPage(-1)">上一页</button>
+                        <span class="page-info" id="random-page-info"></span>
+                        <button class="page-btn" id="random-next-btn" onclick="changeRandomPage(1)">下一页</button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 设置页面 -->
+            <div id="page-settings" class="page">
+                <header class="page-header">
+                    <h1>⚙️ 设置</h1>
+                </header>
+                
+                <div class="settings-grid">
+                    <div class="settings-card">
+                        <h3>👤 个人信息</h3>
+                        <div class="setting-item">
+                            <label>昵称</label>
+                            <input type="text" value="学习者" class="setting-input">
+                        </div>
+                        <div class="setting-item">
+                            <label>时区</label>
+                            <select class="setting-input">
+                                <option selected>Asia/Shanghai (GMT+8)</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <div class="settings-card">
+                        <h3>🔔 提醒设置</h3>
+                        <div class="setting-item toggle">
+                            <label>艾宾浩斯复习提醒</label>
+                            <input type="checkbox" checked class="toggle-switch">
+                        </div>
+                        <div class="setting-item toggle">
+                            <label>每日学习提醒</label>
+                            <input type="checkbox" class="toggle-switch">
+                        </div>
+                        <div class="setting-item">
+                            <label>提醒时间</label>
+                            <input type="time" value="09:00" class="setting-input">
+                        </div>
+                        <div class="setting-item toggle">
+                            <label>自动同步学习痕迹到题库</label>
+                            <input type="checkbox" id="auto-sync-question-toggle" checked class="toggle-switch">
+                        </div>
+                        <div class="setting-item">
+                            <label>每次保存最多同步条数（每类）</label>
+                            <input type="number" id="auto-sync-max-count" class="setting-input" min="1" max="20" value="5">
+                        </div>
+                    </div>
+                    
+                    <div class="settings-card">
+                        <h3>🎨 外观</h3>
+                        <div class="setting-item toggle">
+                            <label>暗色模式</label>
+                            <input type="checkbox" id="appearance-mode-toggle" checked class="toggle-switch">
+                        </div>
+                        <div class="setting-item">
+                            <label>主题色</label>
+                            <div class="color-options">
+                                <div class="color-option active" data-color="#e94560" style="background: #e94560"></div>
+                                <div class="color-option" data-color="#6366f1" style="background: #6366f1"></div>
+                                <div class="color-option" data-color="#22c55e" style="background: #22c55e"></div>
+                                <div class="color-option" data-color="#f59e0b" style="background: #f59e0b"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="settings-card">
+                        <h3>📊 数据管理</h3>
+                        <button class="btn-secondary" style="width: 100%; margin-bottom: 10px">📤 导出学习数据</button>
+                        <button class="btn-secondary" style="width: 100%; margin-bottom: 10px">📥 导入学习数据</button>
+                        <button class="btn-danger" style="width: 100%">🗑️ 清除所有数据</button>
+                    </div>
+
+                    <div class="settings-card">
+                        <h3>🤖 智能模型配置</h3>
+                        <div class="setting-item toggle">
+                            <label>启用自定义模型对话</label>
+                            <input type="checkbox" id="llm-enabled-toggle" class="toggle-switch">
+                        </div>
+                        <div class="setting-item">
+                            <label>模型接口地址（OpenAI兼容）</label>
+                            <input type="text" id="llm-endpoint-input" class="setting-input" placeholder="例如：https://api.openai.com/v1/chat/completions">
+                        </div>
+                        <div class="setting-item">
+                            <label>模型名称</label>
+                            <input type="text" id="llm-model-input" class="setting-input" placeholder="例如：gpt-4o-mini / gemini-2.0-flash">
+                        </div>
+                        <div class="setting-item">
+                            <label>API Key</label>
+                            <input type="password" id="llm-api-key-input" class="setting-input" placeholder="请输入你的API Key">
+                        </div>
+                        <div class="setting-item">
+                            <label>Temperature</label>
+                            <input type="number" id="llm-temperature-input" class="setting-input" step="0.1" min="0" max="2" placeholder="例如：0.7">
+                        </div>
+                        <div class="setting-item">
+                            <label>Top P</label>
+                            <input type="number" id="llm-top-p-input" class="setting-input" step="0.1" min="0" max="1" placeholder="例如：1">
+                        </div>
+                        <div class="setting-item">
+                            <label>Max Tokens</label>
+                            <input type="number" id="llm-max-tokens-input" class="setting-input" step="1" min="1" max="8192" placeholder="例如：1024">
+                        </div>
+                        <div class="setting-item toggle">
+                            <label>启用流式输出</label>
+                            <input type="checkbox" id="llm-stream-toggle" class="toggle-switch">
+                        </div>
+                        <div class="setting-item">
+                            <label>System Prompt</label>
+                            <textarea id="llm-system-prompt-input" class="setting-input" rows="4" placeholder="例如：你是一个专业的文档分析助手..."></textarea>
+                        </div>
+                        <div class="setting-item">
+                            <button class="btn-primary" onclick="saveModelSettings()">保存模型配置</button>
+                        </div>
+                        <p class="note-meta">配置后，工作区 AI 对话会优先调用该模型；失败时自动回退到本地/后端RAG。</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <!-- 上传模态框 -->
+    <div class="modal" id="upload-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📤 上传文件</h2>
+                <button class="modal-close" onclick="closeModal('upload-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="upload-area" id="upload-area">
+                    <div class="upload-icon">📁</div>
+                    <p>拖拽文件到这里（支持多个），或点击选择</p>
+                    <p class="upload-hint">支持 PDF, MD, DOCX, TXT；可一次选择多个文件</p>
+                    <input type="file" id="file-input" hidden accept=".pdf,.md,.docx,.txt" multiple>
+                </div>
+                <div class="upload-category">
+                    <label>选择分类</label>
+                    <select class="setting-input" id="upload-category-select">
+                    </select>
+                </div>
+                <div class="upload-progress" id="upload-progress">
+                    <div class="upload-progress-track">
+                        <div class="upload-progress-bar" id="upload-progress-bar"></div>
+                    </div>
+                    <div class="upload-progress-text" id="upload-progress-text">正在准备上传...</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('upload-modal')">取消</button>
+                <button class="btn-primary" id="upload-confirm-btn" onclick="uploadFile()">上传</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新建分类模态框 -->
+    <div class="modal" id="category-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📁 新建分类</h2>
+                <button class="modal-close" onclick="closeModal('category-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>分类名称</label>
+                        <input type="text" id="category-name-input" class="setting-input" placeholder="例如：听力训练">
+                    </div>
+                    <div class="setting-item">
+                        <label>父级分类（可选）</label>
+                        <select id="category-parent-select" class="setting-input">
+                            <option value="">作为顶层分类</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label>分类图标（可选）</label>
+                        <input type="text" id="category-icon-input" class="setting-input" placeholder="例如：🎧">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('category-modal')">取消</button>
+                <button class="btn-primary" onclick="submitNewCategory()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 计划任务模态框 -->
+    <div class="modal" id="task-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="task-modal-title">🗓️ 新建学习计划任务</h2>
+                <button class="modal-close" onclick="closeModal('task-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>计划标题</label>
+                        <input type="text" id="plan-title" class="setting-input" placeholder="例如：英语 TED 精读计划">
+                    </div>
+                    <div class="setting-item">
+                        <label>计划内容</label>
+                        <textarea id="plan-content" class="setting-input" placeholder="写下本次学习任务内容"></textarea>
+                    </div>
+                    <div class="setting-item">
+                        <label>学习目标</label>
+                        <input type="text" id="plan-goal" class="setting-input" placeholder="例如：掌握10个新词并完成复述">
+                    </div>
+                    <div class="setting-item">
+                        <label>优先级</label>
+                        <select id="plan-priority" class="setting-input">
+                            <option value="high">高</option>
+                            <option value="medium" selected>中</option>
+                            <option value="low">低</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label>任务频次</label>
+                        <select id="plan-frequency" class="setting-input">
+                            <option value="once">仅一次</option>
+                            <option value="daily">每天</option>
+                            <option value="workday">工作日</option>
+                            <option value="weekend">周末</option>
+                            <option value="odd">奇数日</option>
+                            <option value="even">偶数日</option>
+                            <option value="weekly">每周</option>
+                            <option value="biweekly">每两周</option>
+                            <option value="monthly">每月</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label>时间区间</label>
+                        <div class="plan-range-grid">
+                            <div class="plan-range-col">
+                                <span class="note-meta">开始</span>
+                                <input type="date" id="plan-start-date" class="setting-input">
+                                <input type="time" id="plan-start-time" class="setting-input">
+                            </div>
+                            <div class="plan-range-col">
+                                <span class="note-meta">结束</span>
+                                <input type="date" id="plan-end-date" class="setting-input">
+                                <input type="time" id="plan-end-time" class="setting-input">
+                            </div>
+                        </div>
+                    </div>
+                    <div class="setting-item" id="plan-edit-scope-group">
+                        <label>修改范围</label>
+                        <select id="plan-edit-scope" class="setting-input">
+                            <option value="single">仅修改当天</option>
+                            <option value="all">修改所有频次任务</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('task-modal')">取消</button>
+                <button class="btn-danger" id="task-modal-delete" onclick="deleteTaskPlan()">删除任务</button>
+                <button class="btn-primary" id="task-modal-submit" onclick="submitTaskPlan()">保存任务</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="year-goal-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="year-goal-modal-title">新增年度目标</h2>
+                <button class="modal-close" onclick="closeModal('year-goal-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>年度</label>
+                        <input type="number" id="year-goal-year" class="setting-input" min="2000" max="2100">
+                    </div>
+                    <div class="setting-item">
+                        <label>目标标题</label>
+                        <input type="text" id="year-goal-title" class="setting-input" placeholder="例如：构建年度学习体系">
+                    </div>
+                    <div class="setting-item">
+                        <label>目标描述</label>
+                        <textarea id="year-goal-desc" class="setting-input" placeholder="补充目标背景与方向"></textarea>
+                    </div>
+                    <div class="setting-item">
+                        <label>状态</label>
+                        <select id="year-goal-status" class="setting-input">
+                            <option value="active">进行中</option>
+                            <option value="paused">暂停</option>
+                            <option value="done">已完成</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('year-goal-modal')">取消</button>
+                <button class="btn-primary" onclick="submitYearGoalModal()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="quarter-goal-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="quarter-goal-modal-title">新增季度目标</h2>
+                <button class="modal-close" onclick="closeModal('quarter-goal-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>季度</label>
+                        <div class="note-meta" id="quarter-goal-period"></div>
+                    </div>
+                    <div class="setting-item">
+                        <label>目标标题</label>
+                        <input type="text" id="quarter-goal-title" class="setting-input" placeholder="例如：完成核心能力搭建">
+                    </div>
+                    <div class="setting-item">
+                        <label>目标描述</label>
+                        <textarea id="quarter-goal-desc" class="setting-input" placeholder="补充目标背景与方向"></textarea>
+                    </div>
+                    <div class="setting-item">
+                        <label>状态</label>
+                        <select id="quarter-goal-status" class="setting-input">
+                            <option value="active">进行中</option>
+                            <option value="paused">暂停</option>
+                            <option value="done">已完成</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('quarter-goal-modal')">取消</button>
+                <button class="btn-primary" onclick="submitQuarterGoalModal()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="kr-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="kr-modal-title">新增 KR</h2>
+                <button class="modal-close" onclick="closeModal('kr-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>关键结果</label>
+                        <input type="text" id="kr-title" class="setting-input" placeholder="例如：完成 12 本核心书阅读">
+                    </div>
+                    <div class="setting-item">
+                        <label>目标值</label>
+                        <input type="number" id="kr-target" class="setting-input" placeholder="例如：12">
+                    </div>
+                    <div class="setting-item">
+                        <label>当前值</label>
+                        <input type="number" id="kr-current" class="setting-input" placeholder="例如：4">
+                    </div>
+                    <div class="setting-item">
+                        <label>单位</label>
+                        <input type="text" id="kr-unit" class="setting-input" placeholder="例如：本">
+                    </div>
+                    <div class="setting-item">
+                        <label>状态</label>
+                        <select id="kr-status" class="setting-input">
+                            <option value="active">进行中</option>
+                            <option value="done">已完成</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('kr-modal')">取消</button>
+                <button class="btn-primary" onclick="submitKrModal()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="goal-task-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>绑定任务</h2>
+                <button class="modal-close" onclick="closeModal('goal-task-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="goal-task-modal-list" id="goal-task-modal-list"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('goal-task-modal')">取消</button>
+                <button class="btn-primary" onclick="submitGoalTaskModal()">保存绑定</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="kr-task-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="kr-task-modal-title">绑定 KR 任务</h2>
+                <button class="modal-close" onclick="closeModal('kr-task-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="goal-task-modal-list" id="kr-task-modal-list"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('kr-task-modal')">取消</button>
+                <button class="btn-primary" onclick="submitKrTaskModal()">保存绑定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 题库知识点模态框 -->
+    <div class="modal" id="question-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📘 添加题库知识点</h2>
+                <button class="modal-close" onclick="closeModal('question-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>分类</label>
+                        <select id="question-category" class="setting-input"></select>
+                    </div>
+                    <div class="setting-item">
+                        <label>题目/知识点</label>
+                        <textarea id="question-content" class="setting-input" placeholder="例如：What does resilience mean?"></textarea>
+                    </div>
+                    <div class="setting-item">
+                        <label>答案/解释</label>
+                        <textarea id="question-answer" class="setting-input" placeholder="例如：resilience 表示复原力、韧性"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('question-modal')">取消</button>
+                <button class="btn-primary" onclick="submitQuestionBankItem()">添加到题库</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="question-category-edit-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>✏️ 编辑题库分类</h2>
+                <button class="modal-close" onclick="closeModal('question-category-edit-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>分类名称</label>
+                        <input type="text" id="question-category-edit-input" class="setting-input" placeholder="例如：英语每日新词">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('question-category-edit-modal')">取消</button>
+                <button class="btn-primary" onclick="submitQuestionCategoryEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 一键提炼确认弹窗 -->
+    <div class="modal" id="extract-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>✨ 笔记/词汇一键加入题库</h2>
+                <button class="modal-close" onclick="closeModal('extract-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-item">
+                    <label>目标题库分类</label>
+                    <select id="extract-target-category" class="setting-input"></select>
+                </div>
+                <div class="setting-item">
+                    <label>选择要加入题库的笔记与词汇</label>
+                    <div id="extract-preview" class="extract-preview"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('extract-modal')">取消</button>
+                <button class="btn-primary" onclick="confirmExtractToQuestionBank()">确认添加</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 题库批量导入弹窗 -->
+    <div class="modal" id="question-batch-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📥 批量导入题库</h2>
+                <button class="modal-close" onclick="closeModal('question-batch-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>导入格式</label>
+                        <select id="batch-import-format" class="setting-input">
+                            <option value="pipe">行格式：分类|题目|答案</option>
+                            <option value="qa">块格式：Q:/A:（可选分类）</option>
+                        </select>
+                    </div>
+                    <div class="setting-item">
+                        <label>默认分类（仅在未提供分类时使用）</label>
+                        <input type="text" id="batch-default-category" class="setting-input" placeholder="例如：英语每日新词">
+                    </div>
+                    <div class="setting-item">
+                        <label>批量内容</label>
+                        <textarea id="batch-import-text" class="setting-input" style="min-height: 220px;" placeholder="格式一（行格式）：
+英语每日新词|resilience是什么意思？|复原力、韧性
+英语每日短语学习|Break the ice是什么意思？|打破僵局
+
+格式二（块格式）：
+分类: 英语每日新词
+Q: resilience是什么意思？
+A: 复原力、韧性
+---
+Q: agility是什么意思？
+A: 敏捷、机敏"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('question-batch-modal')">取消</button>
+                <button class="btn-primary" onclick="submitQuestionBatchImport()">开始导入</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 题库分类新增弹窗 -->
+    <div class="modal" id="question-category-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>🗂️ 新增题库分类</h2>
+                <button class="modal-close" onclick="closeModal('question-category-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>分类名称</label>
+                        <input type="text" id="question-category-name-input" class="setting-input" placeholder="例如：英语每日精读">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('question-category-modal')">取消</button>
+                <button class="btn-primary" onclick="submitQuestionCategoryModal()">创建分类</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 工作区词汇编辑弹窗 -->
+    <div class="modal" id="vocab-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="vocab-modal-title">📚 新增词汇</h2>
+                <button class="modal-close" onclick="closeModal('vocab-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>词汇</label>
+                        <input type="text" id="vocab-word-input" class="setting-input" placeholder="例如：resilience">
+                    </div>
+                    <div class="setting-item">
+                        <label>词义/释义</label>
+                        <textarea id="vocab-meaning-input" class="setting-input" placeholder="例如：复原力、韧性"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('vocab-modal')">取消</button>
+                <button class="btn-primary" onclick="submitVocabModal()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 首页待办新增弹窗 -->
+    <div class="modal" id="todo-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>✅ 新增今日待办</h2>
+                <button class="modal-close" onclick="closeModal('todo-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>待办内容</label>
+                        <input type="text" id="todo-content-input" class="setting-input" placeholder="例如：复习 TED 演讲核心词汇">
+                    </div>
+                    <div class="setting-item">
+                        <label>时间区间</label>
+                        <div class="todo-time-grid">
+                            <input type="time" id="todo-start-time" class="setting-input">
+                            <input type="time" id="todo-end-time" class="setting-input">
+                        </div>
+                    </div>
+                    <div class="setting-item">
+                        <label>优先级</label>
+                        <select id="todo-priority-input" class="setting-input">
+                            <option value="high">高优先级</option>
+                            <option value="medium" selected>进行中</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('todo-modal')">取消</button>
+                <button class="btn-primary" onclick="submitTodoModal()">添加</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 图书馆分类重命名弹窗 -->
+    <div class="modal" id="rename-category-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>✏️ 重命名分类</h2>
+                <button class="modal-close" onclick="closeModal('rename-category-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>新分类名称</label>
+                        <input type="text" id="rename-category-name-input" class="setting-input" placeholder="输入新的分类名称">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" onclick="closeModal('rename-category-modal')">取消</button>
+                <button class="btn-primary" onclick="submitRenameCategoryModal()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 全局统一提示/确认弹窗 -->
+    <div class="modal" id="app-dialog-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="app-dialog-title">提示</h2>
+                <button class="modal-close" onclick="cancelAppDialog()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="setting-item">
+                    <p id="app-dialog-message"></p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="app-dialog-cancel-btn" onclick="cancelAppDialog()">取消</button>
+                <button class="btn-primary" id="app-dialog-confirm-btn" onclick="confirmAppDialog()">确定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 登录注册弹窗 -->
+    <div class="modal" id="auth-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="auth-modal-title">🔐 账号登录</h2>
+                <button class="modal-close" onclick="closeModal('auth-modal')">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <div class="setting-item">
+                        <label>用户名</label>
+                        <input type="text" id="auth-username-input" class="setting-input" placeholder="例如：local-user">
+                    </div>
+                    <div class="setting-item">
+                        <label>密码</label>
+                        <input type="password" id="auth-password-input" class="setting-input" placeholder="请输入密码">
+                    </div>
+                </div>
+                <div class="auth-error" id="auth-modal-error"></div>
+                <p id="auth-modal-tip" class="note-meta"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" id="auth-toggle-btn" onclick="toggleAuthMode()">切换为注册</button>
+                <button class="btn-primary" onclick="submitAuthModal()">提交</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Vibe Mode 遮罩 -->
+    <div class="vibe-overlay" id="vibe-overlay">
+        <div class="vibe-content">
+            <button class="vibe-close" onclick="toggleVibeMode()">✕</button>
+            <h1>🎵 Vibe Mode</h1>
+            <p>沉浸式学习模式</p>
+            <div class="vibe-controls">
+                <button class="vibe-btn" onclick="playLofi()">▶ 播放 Lo-fi</button>
+                <button class="vibe-btn" onclick="stopLofi()">⏹ 停止</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+    <script src="src/components/appearance/appearance.component.js"></script>
+    <script src="src/components/library/library.component.js"></script>
+    <script src="src/services/rag/rag.service.js"></script>
+    <script src="src/components/chat/chat.component.js"></script>
+    <script src="clawmind.config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

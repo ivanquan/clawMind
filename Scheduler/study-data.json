@@ -1,0 +1,55 @@
+{
+  "version": "1.0",
+  "created": "2026-03-05",
+  "timezone": "Asia/Shanghai",
+  "vocabulary": {
+    "emotional-agility": {
+      "name": "情绪敏锐度词汇",
+      "count": 22,
+      "file": "vocabulary-emotional-agility.md",
+      "addedDate": "2026-03-05",
+      "reviewSchedule": {
+        "day1": { "date": "2026-03-05", "completed": true },
+        "day2": { "date": "2026-03-06", "completed": false, "remindAt": "2026-03-06T09:00:00+08:00" },
+        "day4": { "date": "2026-03-09", "completed": false, "remindAt": "2026-03-09T09:00:00+08:00" },
+        "day7": { "date": "2026-03-12", "completed": false, "remindAt": "2026-03-12T09:00:00+08:00" },
+        "day15": { "date": "2026-03-20", "completed": false, "remindAt": "2026-03-20T09:00:00+08:00" },
+        "day30": { "date": "2026-04-04", "completed": false, "remindAt": "2026-04-04T09:00:00+08:00" }
+      }
+    }
+  },
+  "todos": [
+    {
+      "id": "todo-001",
+      "title": "复习情绪敏锐度词汇",
+      "priority": "high",
+      "category": "English",
+      "dueDate": "2026-03-06",
+      "completed": false
+    },
+    {
+      "id": "todo-002",
+      "title": "阅读核心论述第7-9页",
+      "priority": "medium",
+      "category": "English",
+      "dueDate": null,
+      "completed": false
+    },
+    {
+      "id": "todo-003",
+      "title": "用英语复述演讲观点",
+      "priority": "medium",
+      "category": "English",
+      "dueDate": null,
+      "completed": false
+    },
+    {
+      "id": "todo-004",
+      "title": "写情绪敏锐度英文短文",
+      "priority": "low",
+      "category": "English",
+      "dueDate": null,
+      "completed": false
+    }
+  ]
+}

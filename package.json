@@ -1,0 +1,42 @@
+{
+  "name": "clawmind",
+  "version": "1.0.0",
+  "description": "ClawMind — 学习资料、日程与年度目标 + AI 工作区与题库",
+  "main": "server/index.js",
+  "bin": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "backup:db": "node scripts/backup-db.js",
+    "switch:local-lan": "node scripts/switch-deploy.js local-lan",
+    "switch:server": "node scripts/switch-deploy.js server",
+    "build:exe": "pkg . --targets node18-win-x64 --output dist/ClawMind.exe"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.1.31",
+    "@langchain/langgraph": "^1.2.1",
+    "@langchain/openai": "^1.2.12",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "express": "^4.22.1",
+    "mammoth": "^1.11.0",
+    "multer": "^2.1.1",
+    "pdf-parse": "^2.4.5",
+    "sqlite3": "^5.1.7",
+    "start": "^5.1.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "assets": [
+      "index.html",
+      "styles.css",
+      "app.js",
+      "clawmind.config.js",
+      "src/**/*",
+      ".env.example",
+      "node_modules/sqlite3/lib/binding/**/*",
+      "node_modules/sqlite3/build/**/*"
+    ]
+  }
+}
