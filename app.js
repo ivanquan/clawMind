@@ -7,7 +7,7 @@ const appState = {
   totalDocPages: 1,
   currentMonthDate: new Date(2026, 2, 1),
   selectedCalendarDate: "",
-  themeMode: "dark",
+  themeMode: "light",
   themeColor: "#e94560",
   autoSyncQuestionBank: true,
   autoSyncMaxPerSave: 5,
@@ -42,6 +42,7 @@ const appState = {
   libraryFiles: [],
   workspaceData: {},
   todayTodos: [],
+  todayTodosByDate: {},
   scheduleTasks: [],
   learningRecords: [],
   questionBank: [],
@@ -69,6 +70,17 @@ const appState = {
   selectedQuarterGoalId: "",
   goalTaskFilter: "all",
   goalTaskSort: "time",
+  workspaceViewMode: "original",
+  workspacePdfZoom: 120,
+  workspaceBrushMode: "free",
+  workspaceBrushColor: "#1a1a2e",
+  highlightColor: "yellow",
+  highlightStyle: "fill",
+  onboarding: {
+    isNewUser: false,
+    globalDone: false,
+    pageSeen: {},
+  },
 };
 
 const runtimeState = {
@@ -99,6 +111,23 @@ const runtimeState = {
     token: "",
     user: null,
     unauthorizedNotified: false,
+    justRegistered: false,
+  },
+  pdf: {
+    docCache: {},
+    renderToken: 0,
+  },
+  onboarding: {
+    active: false,
+    steps: [],
+    index: 0,
+    onFinish: null,
+  },
+  ui: {
+    zoomTipShown: false,
+    zoomTimer: null,
+    workspaceBrushOn: false,
+    workspaceTextMode: false,
   },
   chat: {
     lastModelError: "",
@@ -111,6 +140,7 @@ const runtimeState = {
     taskId: "",
     seriesId: "",
   },
+  todoEditIndex: undefined,
   extract: {
     selectedNoteIds: [],
     selectedVocabIds: [],
@@ -132,6 +162,20 @@ const runtimeState = {
     goalId: "",
   },
 };
+
+const HIGHLIGHT_COLORS = {
+  yellow: { label: "黄色", rgba: "rgba(255, 241, 115, 0.68)" },
+  green: { label: "绿色", rgba: "rgba(158, 247, 168, 0.62)" },
+  blue: { label: "蓝色", rgba: "rgba(159, 210, 255, 0.62)" },
+  pink: { label: "粉色", rgba: "rgba(255, 183, 216, 0.62)" },
+};
+
+const HIGHLIGHT_STYLES = {
+  fill: { label: "色块模式" },
+  underline: { label: "下划线模式" },
+};
+
+const DEFAULT_STARTER_FILE_TAG = "default-backend";
 
 /**
  * 配置 PDF.js worker，提高 PDF 解析性能。
@@ -219,6 +263,145 @@ function deletePdfBlob(fileId) {
 }
 
 /**
+ * 清理 PDF 文档缓存，避免删除文件后仍引用旧文档实例。
+ * @param {string} fileId 文件 id。
+ */
+function clearPdfDocCache(fileId) {
+  if (!fileId) return;
+  delete runtimeState.pdf.docCache[fileId];
+}
+
+async function ensureStarterContentForNewUser() {
+  const isEmpty = appState.libraryFiles.length === 0;
+  if (!isEmpty) return;
+  if (!runtimeState.auth.user?.id) return;
+  const info = await fetchDefaultStarterInfo();
+  if (info?.available) {
+    const injected = await injectStarterPdfFromBackend(info);
+    if (injected) return;
+  }
+  await injectFallbackStarterPdf();
+}
+
+async function fetchDefaultStarterInfo() {
+  if (!runtimeState.auth.token) return null;
+  const result = await requestApi("/library/default-file");
+  if (!result || result.ok === false) return null;
+  return result;
+}
+
+async function fetchDefaultStarterBlob() {
+  const base = getApiBaseUrl();
+  const headers = new Headers();
+  if (runtimeState.auth.token) {
+    headers.set("Authorization", `Bearer ${runtimeState.auth.token}`);
+  }
+  const response = await fetch(`${base}/library/default-file/content`, { headers });
+  if (!response.ok) return null;
+  return response.blob().catch(() => null);
+}
+
+function hasDefaultStarterFile() {
+  return appState.libraryFiles.some((file) => file.sourceTag === DEFAULT_STARTER_FILE_TAG);
+}
+
+async function injectStarterPdfFromBackend(info) {
+  if (!info?.available) return false;
+  if (hasDefaultStarterFile()) return true;
+  const blob = await fetchDefaultStarterBlob();
+  if (!blob || blob.size === 0) return false;
+  return await persistStarterPdf({
+    blob,
+    name: String(info?.name || "默认学习资料"),
+    sourceTag: DEFAULT_STARTER_FILE_TAG,
+  });
+}
+
+async function injectFallbackStarterPdf() {
+  const starterBlob = buildStarterPdfBlob();
+  return await persistStarterPdf({
+    blob: starterBlob,
+    name: "ClawMind 新手示例",
+    sourceTag: "fallback",
+  });
+}
+
+async function persistStarterPdf({ blob, name, sourceTag }) {
+  if (!blob) return false;
+  let starterCategory = appState.libraryCategories.find((cat) => cat.name === "新手引导");
+  if (!starterCategory) {
+    starterCategory = {
+      id: `cat-starter-${Date.now()}`,
+      name: "新手引导",
+      icon: "🚀",
+      parentId: null,
+    };
+    appState.libraryCategories.push(starterCategory);
+  }
+  const fileId = `file-starter-${Date.now()}`;
+  await savePdfBlob(fileId, blob);
+  appState.libraryFiles.push({
+    id: fileId,
+    name,
+    type: "PDF",
+    size: `${Math.max(1, Math.round(blob.size / 1024))}KB`,
+    pages: "1页",
+    addedAt: new Date().toISOString().split("T")[0],
+    categoryId: starterCategory.id,
+    lastOpenedAt: "",
+    completed: false,
+    completedAt: "",
+    sourceTag,
+  });
+  const pages = await extractPdfPagesFromFile(blob);
+  appState.workspaceData[fileId] = {
+    pages: pages.length > 0 ? pages : [{ html: `<p>${escapeHtml(name)}</p>`, highlights: [], marginNotes: [] }],
+    notes: [],
+    vocab: [],
+    savedAt: null,
+  };
+  appState.selectedCategoryId = starterCategory.id;
+  appState.activeFileId = fileId;
+  appState.currentDocPage = 1;
+  appState.totalDocPages = Math.max(1, appState.workspaceData[fileId].pages.length);
+  persistLocalState();
+  return true;
+}
+
+function buildStarterPdfBlob() {
+  const text1 = "ClawMind Starter PDF";
+  const text2 = "1) 在图书馆上传你的第一份资料";
+  const text3 = "2) 在工作区选中文本，做高亮和笔记";
+  const text4 = "3) 在日程中心安排复习节奏";
+  const streamText = `BT /F1 22 Tf 72 760 Td (${escapePdfText(text1)}) Tj ET\nBT /F1 14 Tf 72 720 Td (${escapePdfText(text2)}) Tj ET\nBT /F1 14 Tf 72 695 Td (${escapePdfText(text3)}) Tj ET\nBT /F1 14 Tf 72 670 Td (${escapePdfText(text4)}) Tj ET`;
+  const objects = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>\nendobj\n",
+    `4 0 obj\n<< /Length ${new TextEncoder().encode(streamText).length} >>\nstream\n${streamText}\nendstream\nendobj\n`,
+    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  for (const obj of objects) {
+    offsets.push(new TextEncoder().encode(pdf).length);
+    pdf += obj;
+  }
+  const xrefOffset = new TextEncoder().encode(pdf).length;
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let i = 1; i <= objects.length; i += 1) {
+    pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return new Blob([pdf], { type: "application/pdf" });
+}
+
+function escapePdfText(text) {
+  return String(text || "").replace(/\\/g, "\\\\").replace(/\(/g, "\\(").replace(/\)/g, "\\)");
+}
+
+/**
  * 初始化应用并渲染所有核心模块。
  */
 async function initApp() {
@@ -232,6 +415,7 @@ async function initApp() {
   }
   restoreLocalState();
   await hydrateStateFromBackend();
+  await ensureStarterContentForNewUser();
   normalizeWorkspaceData();
   normalizeLibraryFilesCategory();
   normalizeQuestionBankItems();
@@ -244,6 +428,7 @@ async function initApp() {
   bindNavigation();
   bindTabSwitch();
   bindUploadArea();
+  bindWorkspaceZoomWheel();
   bindGlobalFileDrop();
   bindEnterToSend();
   bindCategoryTreeClick();
@@ -257,6 +442,7 @@ async function initApp() {
   bindModelSettings();
   bindAuthEnterSubmit();
   await refreshUiFromState();
+  maybeStartGlobalOnboarding();
   await refreshChatSessions(true);
   if (runtimeState.rag.sessionId) {
     await loadChatSessionMessages(runtimeState.rag.sessionId);
@@ -283,9 +469,12 @@ async function refreshUiFromState() {
   syncAuthUi();
   populateUploadCategoryOptions();
   populateWorkspaceFileOptions();
+  syncHighlightColorPicker();
+  syncHighlightStylePicker();
   await loadActiveWorkspaceFile();
   syncPageIndicator();
   updateStats();
+  maybeShowDailyFeedbackBanner();
 }
 
 /**
@@ -354,6 +543,7 @@ function resetUserScopedState() {
   appState.libraryFiles = [];
   appState.workspaceData = {};
   appState.todayTodos = [];
+  appState.todayTodosByDate = {};
   appState.scheduleTasks = [];
   appState.learningRecords = [];
   appState.questionBank = [];
@@ -541,6 +731,7 @@ function setAuthModalMessage(message) {
  * 提交登录/注册表单。
  */
 async function submitAuthModal() {
+  const isRegisterMode = appState.authModalMode === "register";
   const username = getValue("auth-username-input");
   const password = getValue("auth-password-input");
   if (!username || !password) {
@@ -567,7 +758,13 @@ async function submitAuthModal() {
     id: String(result.user.id || ""),
     username: String(result.user.username || username),
   };
+  runtimeState.auth.justRegistered = isRegisterMode;
   runtimeState.rag.userId = runtimeState.auth.user.id;
+  if (isRegisterMode) {
+    appState.onboarding.isNewUser = true;
+    appState.onboarding.globalDone = false;
+    appState.onboarding.pageSeen = {};
+  }
   resetUserScopedState();
   restoreLocalState();
   persistAuthState();
@@ -582,7 +779,14 @@ async function submitAuthModal() {
   if (runtimeState.rag.sessionId) {
     await loadChatSessionMessages(runtimeState.rag.sessionId);
   }
-  showAppAlert("登录成功，后端同步已启用。", "登录成功");
+  const shouldGuide = Boolean(appState.onboarding.isNewUser && !appState.onboarding.globalDone);
+  if (shouldGuide) {
+    setTimeout(() => {
+      maybeStartGlobalOnboarding();
+    }, 120);
+  } else {
+    showAppAlert("登录成功，后端同步已启用。", "登录成功");
+  }
 }
 
 /**
@@ -1135,22 +1339,124 @@ async function hydrateStateFromBackend() {
   }
   runtimeState.backend.available = true;
   const remote = data.state;
+  const hasRemoteData = hasRemoteSyncState(remote);
+  if (hasRemoteData) {
+    applyRemoteSyncState(remote);
+    return;
+  }
+  scheduleBackendSync();
+}
+
+/**
+ * 判断后端状态快照是否包含可恢复的业务数据。
+ * @param {any} remote 后端返回状态。
+ * @returns {boolean} 是否包含有效业务内容。
+ */
+function hasRemoteSyncState(remote) {
+  if (!remote || typeof remote !== "object") return false;
   const hasRemoteData = (
     Array.isArray(remote.libraryCategories) && remote.libraryCategories.length > 0
   ) || (
     Array.isArray(remote.questionBank) && remote.questionBank.length > 0
   ) || (
     Array.isArray(remote.learningRecords) && remote.learningRecords.length > 0
+  ) || (
+    Array.isArray(remote.libraryFiles) && remote.libraryFiles.length > 0
+  ) || (
+    Array.isArray(remote.todayTodos) && remote.todayTodos.length > 0
+  ) || (
+    Array.isArray(remote.scheduleTasks) && remote.scheduleTasks.length > 0
+  ) || (
+    Array.isArray(remote.yearGoals) && remote.yearGoals.length > 0
+  ) || (
+    Array.isArray(remote.quarterGoals) && remote.quarterGoals.length > 0
+  ) || (
+    Array.isArray(remote.goalKrs) && remote.goalKrs.length > 0
+  ) || (
+    Array.isArray(remote.goalTaskLinks) && remote.goalTaskLinks.length > 0
+  ) || (
+    Array.isArray(remote.krTaskLinks) && remote.krTaskLinks.length > 0
+  ) || (
+    Array.isArray(remote.quarterReviews) && remote.quarterReviews.length > 0
+  ) || (
+    remote.workspaceData && typeof remote.workspaceData === "object" && Object.keys(remote.workspaceData).length > 0
   );
+  return hasRemoteData;
+}
 
-  if (hasRemoteData) {
-    if (Array.isArray(remote.libraryCategories)) appState.libraryCategories = remote.libraryCategories;
-    if (Array.isArray(remote.questionBank)) appState.questionBank = remote.questionBank;
-    if (Array.isArray(remote.learningRecords)) appState.learningRecords = remote.learningRecords;
-    return;
+/**
+ * 应用后端返回的状态快照。
+ * @param {any} remote 后端状态对象。
+ */
+function applyRemoteSyncState(remote) {
+  if (!remote || typeof remote !== "object") return;
+  if (typeof remote.themeMode === "string") appState.themeMode = remote.themeMode;
+  if (typeof remote.themeColor === "string") appState.themeColor = remote.themeColor;
+  if (typeof remote.autoSyncQuestionBank === "boolean") appState.autoSyncQuestionBank = remote.autoSyncQuestionBank;
+  if (typeof remote.autoSyncMaxPerSave === "number") appState.autoSyncMaxPerSave = sanitizeCount(String(remote.autoSyncMaxPerSave), 5, 20);
+  if (typeof remote.librarySortBy === "string") appState.librarySortBy = remote.librarySortBy;
+  if (typeof remote.libraryStatusFilter === "string") appState.libraryStatusFilter = remote.libraryStatusFilter;
+  if (typeof remote.libraryPageSize === "number") appState.libraryPageSize = sanitizeCount(String(remote.libraryPageSize), 12, 24);
+  if (typeof remote.questionSourceFilter === "string") appState.questionSourceFilter = remote.questionSourceFilter;
+  if (typeof remote.llmEnabled === "boolean") appState.llmEnabled = remote.llmEnabled;
+  if (typeof remote.llmEndpoint === "string") appState.llmEndpoint = remote.llmEndpoint;
+  if (typeof remote.llmModel === "string") appState.llmModel = remote.llmModel;
+  if (typeof remote.llmApiKey === "string") appState.llmApiKey = remote.llmApiKey;
+  if (typeof remote.llmTemperature === "number") appState.llmTemperature = sanitizeFloat(remote.llmTemperature, 0.7, 0, 2);
+  if (typeof remote.llmTopP === "number") appState.llmTopP = sanitizeFloat(remote.llmTopP, 1, 0, 1);
+  if (typeof remote.llmMaxTokens === "number") appState.llmMaxTokens = sanitizeCount(String(remote.llmMaxTokens), 1024, 8192);
+  if (typeof remote.llmStream === "boolean") appState.llmStream = remote.llmStream;
+  if (typeof remote.llmSystemPrompt === "string") appState.llmSystemPrompt = remote.llmSystemPrompt;
+  if (typeof remote.workspaceViewMode === "string" && remote.workspaceViewMode === "original") {
+    appState.workspaceViewMode = "original";
   }
-
-  scheduleBackendSync();
+  if (typeof remote.workspacePdfZoom === "number") {
+    appState.workspacePdfZoom = Math.max(40, Math.min(260, remote.workspacePdfZoom));
+  }
+  if (typeof remote.workspaceBrushMode === "string" && (remote.workspaceBrushMode === "free" || remote.workspaceBrushMode === "rect")) {
+    appState.workspaceBrushMode = remote.workspaceBrushMode;
+  }
+  if (typeof remote.workspaceBrushColor === "string" && /^#[0-9a-fA-F]{3,8}$/.test(remote.workspaceBrushColor)) {
+    appState.workspaceBrushColor = remote.workspaceBrushColor;
+  }
+  if (typeof remote.highlightColor === "string" && HIGHLIGHT_COLORS[remote.highlightColor]) {
+    appState.highlightColor = remote.highlightColor;
+  }
+  if (typeof remote.highlightStyle === "string" && HIGHLIGHT_STYLES[remote.highlightStyle]) {
+    appState.highlightStyle = remote.highlightStyle;
+  }
+  if (remote.onboarding && typeof remote.onboarding === "object") {
+    appState.onboarding.isNewUser = Boolean(remote.onboarding.isNewUser);
+    appState.onboarding.globalDone = Boolean(remote.onboarding.globalDone);
+    appState.onboarding.pageSeen = (remote.onboarding.pageSeen && typeof remote.onboarding.pageSeen === "object")
+      ? remote.onboarding.pageSeen
+      : {};
+  }
+  if (typeof remote.selectedCategoryId === "string") appState.selectedCategoryId = remote.selectedCategoryId;
+  if (typeof remote.selectedCalendarDate === "string") appState.selectedCalendarDate = remote.selectedCalendarDate;
+  if (typeof remote.activeFileId === "string") appState.activeFileId = remote.activeFileId;
+  if (typeof remote.notesPageSize === "number") appState.notesPageSize = sanitizeCount(String(remote.notesPageSize), 10, 16);
+  if (typeof remote.notesSort === "string") appState.notesSort = remote.notesSort === "oldest" ? "oldest" : "newest";
+  if (Array.isArray(remote.yearGoals)) appState.yearGoals = remote.yearGoals;
+  if (Array.isArray(remote.quarterGoals)) appState.quarterGoals = remote.quarterGoals;
+  if (Array.isArray(remote.goalKrs)) appState.goalKrs = remote.goalKrs;
+  if (Array.isArray(remote.goalTaskLinks)) appState.goalTaskLinks = remote.goalTaskLinks;
+  if (Array.isArray(remote.krTaskLinks)) appState.krTaskLinks = remote.krTaskLinks;
+  if (Array.isArray(remote.quarterReviews)) appState.quarterReviews = remote.quarterReviews;
+  if (typeof remote.selectedGoalPeriod === "string") appState.selectedGoalPeriod = remote.selectedGoalPeriod;
+  if (typeof remote.selectedQuarterGoalId === "string") appState.selectedQuarterGoalId = remote.selectedQuarterGoalId;
+  if (typeof remote.goalTaskSort === "string") appState.goalTaskSort = remote.goalTaskSort;
+  if (Array.isArray(remote.collapsedCategoryIds)) appState.collapsedCategoryIds = remote.collapsedCategoryIds;
+  if (Array.isArray(remote.libraryCategories)) appState.libraryCategories = remote.libraryCategories;
+  if (Array.isArray(remote.libraryFiles)) appState.libraryFiles = remote.libraryFiles;
+  if (remote.workspaceData && typeof remote.workspaceData === "object") appState.workspaceData = remote.workspaceData;
+  if (Array.isArray(remote.todayTodos)) appState.todayTodos = remote.todayTodos;
+  if (Array.isArray(remote.scheduleTasks)) appState.scheduleTasks = remote.scheduleTasks;
+  if (Array.isArray(remote.learningRecords)) appState.learningRecords = remote.learningRecords;
+  if (Array.isArray(remote.questionBank)) appState.questionBank = remote.questionBank;
+  if (Array.isArray(remote.questionCategories)) appState.questionCategories = remote.questionCategories;
+  normalizeQuestionBankItems();
+  normalizeQuestionCategories();
 }
 
 /**
@@ -1193,11 +1499,7 @@ async function syncStateToBackend() {
   if (!runtimeState.auth.token) return;
   if (!runtimeState.backend.available || runtimeState.backend.syncing) return;
   runtimeState.backend.syncing = true;
-  const payload = {
-    libraryCategories: appState.libraryCategories,
-    questionBank: appState.questionBank,
-    learningRecords: appState.learningRecords,
-  };
+  const payload = buildPersistableState();
   const result = await requestApi("/state", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -1298,11 +1600,22 @@ function normalizeWorkspaceData() {
     }
     data.pages = data.pages.map((page) => ({
       html: typeof page.html === "string" ? page.html : "<p>暂无内容</p>",
-      highlights: Array.isArray(page.highlights) ? page.highlights : [],
+      highlights: Array.isArray(page.highlights)
+        ? page.highlights.map((item) => ({
+          ...item,
+          color: HIGHLIGHT_COLORS[item?.color] ? item.color : "yellow",
+          style: HIGHLIGHT_STYLES[item?.style] ? item.style : "fill",
+          spanTokens: Array.isArray(item?.spanTokens) ? item.spanTokens : [],
+          spanSegments: Array.isArray(item?.spanSegments) ? item.spanSegments : [],
+          meaning: typeof item?.meaning === "string" ? item.meaning : "",
+        }))
+        : [],
       marginNotes: Array.isArray(page.marginNotes) ? page.marginNotes : [],
     }));
     if (!Array.isArray(data.notes)) data.notes = [];
     if (!Array.isArray(data.vocab)) data.vocab = [];
+    if (!data.pageDrawings || typeof data.pageDrawings !== "object") data.pageDrawings = {};
+    if (!data.pageTexts || typeof data.pageTexts !== "object") data.pageTexts = {};
     if (!data.savedAt) data.savedAt = null;
     if (!data.syncState || typeof data.syncState !== "object") {
       data.syncState = {
@@ -1343,6 +1656,10 @@ function navigateTo(pageName) {
   if (pageName === "goals") {
     renderGoalCenter();
   }
+  if (pageName === "dashboard") {
+    maybeShowDailyFeedbackBanner();
+  }
+  maybeStartOnboardingForPage(pageName);
 }
 
 /**
@@ -1364,6 +1681,220 @@ function bindTabSwitch() {
       if (target === "chat") renderChatWelcomeMessage();
     });
   });
+}
+
+/**
+ * 新用户引导配置（全局 + 各页面首访说明）。
+ */
+const PAGE_ONBOARDING_CONFIG = {
+  dashboard: {
+    title: "首页功能简介",
+    text: "这里汇总今日任务、学习热力与目标进度。\n第一步建议去「图书馆」导入第一份学习资料，然后回到「工作区」开始学习。",
+    selector: "#page-dashboard .stats-grid",
+  },
+  library: {
+    title: "图书馆功能简介",
+    text: "图书馆用于上传资料、维护分类、管理学习状态。\n建议先创建分类，再上传 PDF/MD/DOCX/TXT。",
+    selector: "#page-library .library-layout",
+  },
+  workspace: {
+    title: "工作区功能简介",
+    text: "这里是文档精读区：支持原版 PDF 阅读、选中高亮、做笔记和一键提炼。",
+    selector: "#page-workspace .workspace-layout",
+  },
+  scheduler: {
+    title: "日程中心功能简介",
+    text: "这里负责学习节奏管理：\n1) 点日期查看任务与进度\n2) 双击日期快速新建任务\n3) 任务支持每天/每周/工作日循环\n4) 下方复习时间线会自动联动学习记录。",
+    selector: "#page-scheduler .schedule-grid",
+  },
+  goals: {
+    title: "目标中心功能简介",
+    text: "目标中心建议按这条路径使用：\n1) 先建年度目标（方向与终局结果）\n2) 再建季度目标（阶段里程碑）\n3) 在 KR 中绑定任务，系统会根据任务完成率自动计算 KR 与季度进度条\n4) KR 任务与日程中心任务联动，日程完成会推动目标进度。",
+    selector: "#page-goals .goals-layout",
+  },
+  "question-bank": {
+    title: "随机题库功能简介",
+    text: "这里做复习闭环：\n1) 可按分类/来源随机抽题\n2) 支持批量导入知识点\n3) 工作区高亮/笔记可自动沉淀到题库。",
+    selector: "#page-question-bank .random-bank-section",
+  },
+  settings: {
+    title: "设置功能简介",
+    text: "可配置外观、模型参数与数据管理。\n建议在这里完成首次偏好设置。",
+    selector: "#page-settings .settings-grid",
+  },
+};
+
+function getGlobalOnboardingSteps() {
+  return [
+    {
+      title: "欢迎来到 ClawMind",
+      text: "这是新用户引导。\n我会先带你快速认识各个核心栏目。",
+      selector: ".sidebar",
+    },
+    {
+      title: "图书馆",
+      text: "用于管理学习资料和分类结构，是所有学习流程的起点。",
+      selector: '.nav-item[data-page=\"library\"]',
+    },
+    {
+      title: "工作区",
+      text: "文档精读区域，可做高亮、笔记、词汇沉淀，并联动 AI 助手。",
+      selector: '.nav-item[data-page=\"workspace\"]',
+    },
+    {
+      title: "日程中心",
+      text: "规划每日任务和周期任务，形成稳定学习节奏。",
+      selector: '.nav-item[data-page=\"scheduler\"]',
+    },
+    {
+      title: "目标中心",
+      text: "拆分年度目标与季度 OKR，让计划有明确完成路径。",
+      selector: '.nav-item[data-page=\"goals\"]',
+    },
+    {
+      title: "随机题库与设置",
+      text: "题库用于复习闭环；设置中可管理主题、模型与数据。",
+      selector: '.nav-item[data-page=\"question-bank\"]',
+    },
+  ];
+}
+
+function shouldStartNewUserOnboarding() {
+  return Boolean(appState.onboarding?.isNewUser);
+}
+
+function maybeStartOnboardingForPage(pageName) {
+  if (!shouldStartNewUserOnboarding()) return;
+  if (runtimeState.onboarding.active) return;
+  if (hasBlockingModalOpen()) return;
+  if (!appState.onboarding.globalDone) return;
+  if (appState.onboarding.pageSeen && appState.onboarding.pageSeen[pageName]) return;
+  const config = PAGE_ONBOARDING_CONFIG[pageName];
+  if (!config) return;
+  startOnboarding(
+    [{ title: config.title, text: config.text, selector: config.selector }],
+    () => {
+      if (!appState.onboarding.pageSeen || typeof appState.onboarding.pageSeen !== "object") {
+        appState.onboarding.pageSeen = {};
+      }
+      appState.onboarding.pageSeen[pageName] = true;
+      persistLocalState();
+    },
+  );
+}
+
+function maybeStartGlobalOnboarding() {
+  if (!shouldStartNewUserOnboarding()) return;
+  if (runtimeState.onboarding.active) return;
+  if (hasBlockingModalOpen()) {
+    setTimeout(() => {
+      maybeStartGlobalOnboarding();
+    }, 180);
+    return;
+  }
+  if (appState.onboarding.globalDone) return;
+  startOnboarding(getGlobalOnboardingSteps(), () => {
+    appState.onboarding.globalDone = true;
+    persistLocalState();
+    maybeStartOnboardingForPage(appState.currentPage);
+  });
+}
+
+function startOnboarding(steps, onFinish) {
+  if (!Array.isArray(steps) || steps.length === 0) return;
+  if (hasBlockingModalOpen()) return;
+  runtimeState.onboarding.active = true;
+  runtimeState.onboarding.steps = steps;
+  runtimeState.onboarding.index = 0;
+  runtimeState.onboarding.onFinish = typeof onFinish === "function" ? onFinish : null;
+  renderOnboardingStep();
+}
+
+function renderOnboardingStep() {
+  const overlay = document.getElementById("onboarding-overlay");
+  const title = document.getElementById("onboarding-title");
+  const text = document.getElementById("onboarding-text");
+  const stepLabel = document.getElementById("onboarding-step");
+  const prevBtn = document.getElementById("onboarding-prev-btn");
+  const nextBtn = document.getElementById("onboarding-next-btn");
+  const highlight = document.getElementById("onboarding-highlight");
+  if (!overlay || !title || !text || !stepLabel || !prevBtn || !nextBtn || !highlight) return;
+  const steps = runtimeState.onboarding.steps || [];
+  const index = Math.min(Math.max(0, runtimeState.onboarding.index || 0), Math.max(0, steps.length - 1));
+  const step = steps[index];
+  if (!step) return;
+  overlay.classList.add("show");
+  title.textContent = String(step.title || "新手引导");
+  text.textContent = String(step.text || "");
+  stepLabel.textContent = `步骤 ${index + 1} / ${steps.length}`;
+  prevBtn.disabled = index === 0;
+  nextBtn.textContent = index >= steps.length - 1 ? "完成" : "下一步";
+  const rect = resolveOnboardingTargetRect(step.selector);
+  if (rect) {
+    highlight.style.left = `${Math.max(8, rect.left - 8)}px`;
+    highlight.style.top = `${Math.max(8, rect.top - 8)}px`;
+    highlight.style.width = `${Math.max(60, rect.width + 16)}px`;
+    highlight.style.height = `${Math.max(36, rect.height + 16)}px`;
+    highlight.classList.add("show");
+  } else {
+    highlight.classList.remove("show");
+  }
+}
+
+function resolveOnboardingTargetRect(selector) {
+  if (!selector) return null;
+  const target = document.querySelector(selector);
+  if (!target) return null;
+  const rect = target.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+  return rect;
+}
+
+function hasBlockingModalOpen() {
+  return document.querySelectorAll(".modal.show").length > 0;
+}
+
+function finishOnboarding(complete = true) {
+  const overlay = document.getElementById("onboarding-overlay");
+  const highlight = document.getElementById("onboarding-highlight");
+  if (overlay) overlay.classList.remove("show");
+  if (highlight) highlight.classList.remove("show");
+  const onFinish = runtimeState.onboarding.onFinish;
+  runtimeState.onboarding.active = false;
+  runtimeState.onboarding.steps = [];
+  runtimeState.onboarding.index = 0;
+  runtimeState.onboarding.onFinish = null;
+  if (complete && typeof onFinish === "function") onFinish();
+}
+
+function onboardingPrev() {
+  if (!runtimeState.onboarding.active) return;
+  runtimeState.onboarding.index = Math.max(0, runtimeState.onboarding.index - 1);
+  renderOnboardingStep();
+}
+
+function onboardingNext() {
+  if (!runtimeState.onboarding.active) return;
+  const steps = runtimeState.onboarding.steps || [];
+  if (runtimeState.onboarding.index >= steps.length - 1) {
+    finishOnboarding(true);
+    return;
+  }
+  runtimeState.onboarding.index += 1;
+  renderOnboardingStep();
+}
+
+function onboardingSkip() {
+  if (!runtimeState.onboarding.active) return;
+  finishOnboarding(false);
+  appState.onboarding.globalDone = true;
+  if (!appState.onboarding.pageSeen || typeof appState.onboarding.pageSeen !== "object") {
+    appState.onboarding.pageSeen = {};
+  }
+  Object.keys(PAGE_ONBOARDING_CONFIG).forEach((name) => {
+    appState.onboarding.pageSeen[name] = true;
+  });
+  persistLocalState();
 }
 
 /**
@@ -1418,16 +1949,26 @@ function bindCategoryTreeClick() {
 }
 
 /**
- * 绑定工作区文件选择器，切换当前学习文档。
+ * 绑定工作区文件选择器（路径 → 文件两步 + 关键字检索），切换当前学习文档。
  */
 function bindWorkspaceFileSelect() {
-  const select = document.getElementById("workspace-file-select");
-  if (!select) return;
-  select.addEventListener("change", async () => {
-    const fileId = select.value;
-    if (!fileId) return;
-    await openDocument(fileId);
-  });
+  const categorySelect = document.getElementById("workspace-category-select");
+  const fileSelect = document.getElementById("workspace-file-select");
+  const searchInput = document.getElementById("workspace-file-search");
+
+  if (categorySelect) {
+    categorySelect.addEventListener("change", () => populateWorkspaceFileList());
+  }
+  if (searchInput) {
+    searchInput.addEventListener("input", () => populateWorkspaceFileList());
+  }
+  if (fileSelect) {
+    fileSelect.addEventListener("change", async () => {
+      const fileId = fileSelect.value;
+      if (!fileId) return;
+      await openDocument(fileId);
+    });
+  }
 }
 
 /**
@@ -1842,6 +2383,21 @@ function doesTaskOccurOnDate(task, dateStr) {
 }
 
 /**
+ * 获取当日手动添加的待办列表（仅当天，按日期隔离）。
+ * @returns {Array<{text:string,priority:string,done:boolean,startTime?:string,endTime?:string}>}
+ */
+function getTodayManualTodos() {
+  const today = toLocalDateString(new Date());
+  if (!appState.todayTodosByDate || typeof appState.todayTodosByDate !== "object") {
+    appState.todayTodosByDate = {};
+  }
+  if (!Array.isArray(appState.todayTodosByDate[today])) {
+    appState.todayTodosByDate[today] = [];
+  }
+  return appState.todayTodosByDate[today];
+}
+
+/**
  * 渲染首页待办列表。
  */
 function renderTodayTodos() {
@@ -1859,7 +2415,8 @@ function renderTodayTodos() {
     taskId: task.id,
     timeRange: formatTimeRange(getTaskStartAt(task), getTaskEndAt(task)),
   }));
-  const manualTodos = appState.todayTodos.map((todo, index) => ({
+  const manualList = getTodayManualTodos();
+  const manualTodos = manualList.map((todo, index) => ({
     ...todo,
     source: "manual",
     todoIndex: index,
@@ -1890,11 +2447,15 @@ function renderTodayTodos() {
         renderQuarterGoals();
         renderQuarterReview();
         renderGoalReminder();
-      } else if (typeof todo.todoIndex === "number") {
-        appState.todayTodos[todo.todoIndex].done = check.checked;
+      } else {
+        const list = getTodayManualTodos();
+        if (typeof todo.todoIndex === "number" && list[todo.todoIndex]) {
+          list[todo.todoIndex].done = check.checked;
+        }
       }
       persistLocalState();
       updateStats();
+      renderTodayTodos();
     });
     const text = document.createElement("span");
     text.className = "todo-text";
@@ -1908,6 +2469,20 @@ function renderTodayTodos() {
     if (todo.source === "manual") {
       const actions = document.createElement("div");
       actions.className = "todo-actions";
+      const editBtn = document.createElement("button");
+      editBtn.className = "todo-action-btn";
+      editBtn.textContent = "编辑";
+      editBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        showEditTodo(todo.todoIndex);
+      });
+      const delBtn = document.createElement("button");
+      delBtn.className = "todo-action-btn todo-delete-btn";
+      delBtn.textContent = "删除";
+      delBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteTodayTodo(todo.todoIndex);
+      });
       const upBtn = document.createElement("button");
       upBtn.className = "todo-action-btn";
       upBtn.textContent = "↑";
@@ -1924,13 +2499,15 @@ function renderTodayTodos() {
         event.stopPropagation();
         moveTodayTodo(todo.todoIndex, 1);
       });
+      actions.appendChild(editBtn);
+      actions.appendChild(delBtn);
       actions.appendChild(upBtn);
       actions.appendChild(downBtn);
       item.appendChild(actions);
     }
     const badge = document.createElement("span");
     badge.className = `todo-priority ${todo.priority}`;
-    badge.textContent = todo.priority === "high" ? "高优先级" : "进行中";
+    badge.textContent = todo.done ? "已完成" : (todo.priority === "high" ? "高优先级" : "进行中");
     item.appendChild(check);
     item.appendChild(text);
     item.appendChild(badge);
@@ -1939,35 +2516,60 @@ function renderTodayTodos() {
 }
 
 /**
- * 渲染首页“继续学习”卡片，按最近打开文件动态展示。
+ * 计算某文件「有学习痕迹的页数」：只计用户高亮，不含文档自带的旁注（marginNotes 来自 PDF 解析）。
+ * @param {string} fileId 文件 id。
+ * @returns {{ pagesWithTraces: number, totalPages: number }} 有痕迹页数、总页数。
+ */
+function getContinueLearningProgress(fileId) {
+  const data = appState.workspaceData[fileId];
+  const pages = Array.isArray(data?.pages) ? data.pages : [];
+  const totalPages = pages.length || 0;
+  const pagesWithTraces = pages.filter((p) => Array.isArray(p.highlights) && p.highlights.length > 0).length;
+  return { pagesWithTraces, totalPages };
+}
+
+/**
+ * 渲染首页“继续学习”卡片，按最近打开文件动态展示（最多 5 个），进度为有学习痕迹的页数/总页数，支持内部滚轮滚动。
  */
 function renderContinueLearning() {
   const container = document.getElementById("continue-learning-container");
   if (!container) return;
-  const target = getLastOpenedFile() || appState.libraryFiles[0];
-  if (!target) {
-    container.innerHTML = '<div class="continue-item"><div class="continue-info"><h3>暂无学习文件</h3><p>请先去图书馆上传资料并开始学习。</p></div></div>';
+  const recent = appState.libraryFiles
+    .filter((f) => f.lastOpenedAt)
+    .sort((a, b) => String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)))
+    .slice(0, 5);
+  if (recent.length === 0) {
+    container.innerHTML = '<div class="continue-learning-list"><div class="continue-item"><div class="continue-info"><h3>暂无学习文件</h3><p>请先去图书馆上传资料并开始学习。</p></div></div></div>';
     return;
   }
-  const data = appState.workspaceData[target.id] || { pages: [], notes: [] };
-  const totalPages = Array.isArray(data.pages) ? data.pages.length : 0;
-  const noteCount = Array.isArray(data.notes) ? data.notes.length : 0;
-  const complete = target.completed === true;
-  const progress = complete ? 100 : Math.min(95, Math.max(10, Math.round((noteCount / Math.max(totalPages, 1)) * 100)));
-  const path = buildCategoryPath(target.categoryId) || "未分类";
-  container.innerHTML = `
+  const itemsHtml = recent
+    .map((target) => {
+      const data = appState.workspaceData[target.id] || { pages: [], notes: [] };
+      const totalPages = Array.isArray(data.pages) ? data.pages.length : 0;
+      const { pagesWithTraces } = getContinueLearningProgress(target.id);
+      const complete = target.completed === true;
+      const percent = totalPages > 0 ? (complete ? 100 : Math.round((pagesWithTraces / totalPages) * 100)) : 0;
+      const progress = Math.min(100, Math.max(0, percent));
+      const labelText = totalPages > 0 ? `${pagesWithTraces}/${totalPages} 页 · ${percent}%` : "—";
+      const path = buildCategoryPath(target.categoryId) || "未分类";
+      return `
     <div class="continue-item" onclick="openDocument('${escapeHtml(target.id)}')">
       <div class="continue-cover">📄</div>
       <div class="continue-info">
         <h3>${escapeHtml(target.name)}</h3>
         <p>${escapeHtml(path)} · ${escapeHtml(target.type)} · ${totalPages || "未知"}页</p>
-        <div class="progress-bar">
-          <div class="progress-fill" style="width: ${progress}%"></div>
+        <div class="continue-progress-row">
+          <div class="progress-bar">
+            <div class="progress-fill" style="width: ${progress}%"></div>
+          </div>
+          <span class="progress-label">${escapeHtml(labelText)}</span>
         </div>
       </div>
       <span class="continue-arrow">${complete ? "✓" : "→"}</span>
-    </div>
-  `;
+    </div>`;
+    })
+    .join("");
+  container.innerHTML = `<div class="continue-learning-list">${itemsHtml}</div>`;
 }
 
 /**
@@ -1982,19 +2584,58 @@ function getLastOpenedFile() {
 }
 
 /**
- * 新增首页待办项。
+ * 新增首页待办项（仅当天）。
  */
 function showAddTodo() {
+  runtimeState.todoEditIndex = undefined;
   setValue("todo-content-input", "");
   setValue("todo-priority-input", "medium");
   setValue("todo-start-time", "09:00");
   setValue("todo-end-time", "10:00");
   const modal = document.getElementById("todo-modal");
+  const titleEl = modal?.querySelector(".modal-header h2");
+  const submitBtn = modal?.querySelector(".modal-footer .btn-primary");
+  if (titleEl) titleEl.textContent = "✅ 新增今日待办";
+  if (submitBtn) submitBtn.textContent = "添加";
   if (modal) modal.classList.add("show");
 }
 
 /**
- * 提交首页待办弹窗表单。
+ * 编辑当日手动待办（打开弹窗并预填）。
+ * @param {number} index 在当日手动待办列表中的下标。
+ */
+function showEditTodo(index) {
+  const list = getTodayManualTodos();
+  const todo = list[index];
+  if (!todo) return;
+  runtimeState.todoEditIndex = index;
+  setValue("todo-content-input", todo.text || "");
+  setValue("todo-priority-input", todo.priority || "medium");
+  setValue("todo-start-time", todo.startTime || "09:00");
+  setValue("todo-end-time", todo.endTime || "10:00");
+  const modal = document.getElementById("todo-modal");
+  const titleEl = modal?.querySelector(".modal-header h2");
+  const submitBtn = modal?.querySelector(".modal-footer .btn-primary");
+  if (titleEl) titleEl.textContent = "✏️ 编辑今日待办";
+  if (submitBtn) submitBtn.textContent = "保存";
+  if (modal) modal.classList.add("show");
+}
+
+/**
+ * 删除当日手动待办。
+ * @param {number} index 在当日手动待办列表中的下标。
+ */
+function deleteTodayTodo(index) {
+  const list = getTodayManualTodos();
+  if (index < 0 || index >= list.length) return;
+  list.splice(index, 1);
+  renderTodayTodos();
+  persistLocalState();
+  updateStats();
+}
+
+/**
+ * 提交首页待办弹窗表单（新增或保存编辑，仅写入当日列表）。
  */
 function submitTodoModal() {
   const content = getValue("todo-content-input");
@@ -2013,7 +2654,14 @@ function submitTodoModal() {
     showAppAlert("开始时间需早于结束时间。");
     return;
   }
-  appState.todayTodos.push({ text: content, priority, done: false, startTime, endTime });
+  const list = getTodayManualTodos();
+  const editIndex = runtimeState.todoEditIndex;
+  if (typeof editIndex === "number" && editIndex >= 0 && editIndex < list.length) {
+    list[editIndex] = { ...list[editIndex], text: content, priority, startTime, endTime };
+    runtimeState.todoEditIndex = undefined;
+  } else {
+    list.push({ text: content, priority, done: false, startTime, endTime });
+  }
   renderTodayTodos();
   closeModal("todo-modal");
   persistLocalState();
@@ -2021,9 +2669,9 @@ function submitTodoModal() {
 }
 
 function moveTodayTodo(index, direction) {
+  const list = getTodayManualTodos();
   const nextIndex = index + direction;
-  if (nextIndex < 0 || nextIndex >= appState.todayTodos.length) return;
-  const list = appState.todayTodos;
+  if (nextIndex < 0 || nextIndex >= list.length) return;
   const temp = list[index];
   list[index] = list[nextIndex];
   list[nextIndex] = temp;
@@ -2277,6 +2925,7 @@ async function deleteLibraryFilesByIds(fileIds) {
   const filesToDelete = appState.libraryFiles.filter((file) => set.has(file.id));
   await Promise.all(filesToDelete.map((file) => deletePdfBlob(file.id)));
   filesToDelete.forEach((file) => {
+    clearPdfDocCache(file.id);
     delete appState.workspaceData[file.id];
   });
   appState.libraryFiles = appState.libraryFiles.filter((file) => !set.has(file.id));
@@ -2470,6 +3119,7 @@ async function deleteCurrentCategory() {
   const filesToDelete = appState.libraryFiles.filter((file) => descendants.includes(file.categoryId));
   await Promise.all(filesToDelete.map((file) => deletePdfBlob(file.id)));
   filesToDelete.forEach((file) => {
+    clearPdfDocCache(file.id);
     delete appState.workspaceData[file.id];
   });
   appState.libraryFiles = appState.libraryFiles.filter((file) => !descendants.includes(file.categoryId));
@@ -2592,9 +3242,9 @@ async function uploadFile() {
 async function uploadFiles(files) {
   if (runtimeState.upload.busy) return;
   const categoryId = getValue("upload-category-select") || appState.selectedCategoryId;
-  const accepted = files.filter((file) => /\.(pdf|md|docx|txt)$/i.test(file.name));
+  const accepted = files.filter((file) => /\.(pdf|md|docx|doc|pptx|ppt|txt)$/i.test(file.name));
   if (accepted.length === 0) {
-    showAppAlert("未检测到可支持的文件类型（PDF/MD/DOCX/TXT）。");
+    showAppAlert("未检测到可支持的文件类型（PDF/MD/DOCX/DOC/PPTX/PPT/TXT）。");
     return;
   }
   setUploadBusy(true);
@@ -2640,6 +3290,8 @@ async function uploadSingleFile(fileObj, categoryId) {
   const id = `file-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   const isPdf = ext === "PDF";
   const isTextLike = ext === "TXT" || ext === "MD";
+  const isWord = ext === "DOCX" || ext === "DOC";
+  const isPpt = ext === "PPTX" || ext === "PPT";
 
   if (isPdf) {
     await savePdfBlob(id, fileObj);
@@ -2666,14 +3318,22 @@ async function uploadSingleFile(fileObj, categoryId) {
       : [{ html: `<p><strong>${escapeHtml(pureName)}</strong></p><p>PDF 解析失败，当前以占位内容展示。</p>`, highlights: [], marginNotes: [] }];
   } else if (isTextLike) {
     const rawText = await fileObj.text().catch(() => "");
-    const lines = String(rawText || "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const html = lines.length > 0
-      ? lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")
-      : `<p><strong>${escapeHtml(pureName)}</strong></p><p>文本为空，当前以占位内容展示。</p>`;
+    const html = ext === "MD"
+      ? markdownToHtml(rawText, pureName)
+      : plainTextToHtml(rawText, pureName);
     appState.workspaceData[id].pages = [{ html, highlights: [], marginNotes: [] }];
+  } else if (isWord) {
+    const html = ext === "DOCX"
+      ? await extractDocxHtmlFromFile(fileObj, pureName)
+      : `<p><strong>${escapeHtml(pureName)}</strong></p><p>DOC 老格式暂不支持完整版式还原，建议转换为 DOCX 或 PDF 以获得更接近原样的展示。</p>`;
+    appState.workspaceData[id].pages = [{ html, highlights: [], marginNotes: [] }];
+  } else if (isPpt) {
+    appState.workspaceData[id].pages = ext === "PPTX"
+      ? await extractPptxPagesFromFile(fileObj, pureName)
+      : [{ html: `<p><strong>${escapeHtml(pureName)}</strong></p><p>PPT 老格式暂不支持完整版式还原，建议转换为 PPTX 或 PDF 以获得更接近原样的展示。</p>`, highlights: [], marginNotes: [] }];
+    if (!Array.isArray(appState.workspaceData[id].pages) || appState.workspaceData[id].pages.length === 0) {
+      appState.workspaceData[id].pages = [{ html: `<p><strong>${escapeHtml(pureName)}</strong></p><p>PPT 解析失败，当前以文本占位展示。</p>`, highlights: [], marginNotes: [] }];
+    }
   } else {
     appState.workspaceData[id].pages = [
       { html: `<p><strong>${escapeHtml(pureName)}</strong></p><p>这是新上传文件的学习区内容占位。你可以在工作区进行高亮、笔记和提炼操作。</p>`, highlights: [], marginNotes: [] },
@@ -2681,6 +3341,87 @@ async function uploadSingleFile(fileObj, categoryId) {
   }
   await uploadFileToServerIngest(fileObj);
   return id;
+}
+
+function plainTextToHtml(rawText, title) {
+  const lines = String(rawText || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.length > 0
+    ? lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")
+    : `<p><strong>${escapeHtml(title)}</strong></p><p>文本为空，当前以占位内容展示。</p>`;
+}
+
+function markdownToHtml(rawText, title) {
+  const source = String(rawText || "").trim();
+  if (!source) return `<p><strong>${escapeHtml(title)}</strong></p><p>Markdown 内容为空。</p>`;
+  if (window.marked && typeof window.marked.parse === "function") {
+    try {
+      return String(window.marked.parse(source));
+    } catch {
+    }
+  }
+  return plainTextToHtml(source, title);
+}
+
+async function extractDocxHtmlFromFile(fileObj, title) {
+  if (!window.mammoth || typeof window.mammoth.convertToHtml !== "function") {
+    return `<p><strong>${escapeHtml(title)}</strong></p><p>DOCX 预览依赖未加载，当前降级为占位展示。</p>`;
+  }
+  try {
+    const buffer = await fileObj.arrayBuffer();
+    const result = await window.mammoth.convertToHtml({ arrayBuffer: buffer });
+    const html = String(result?.value || "").trim();
+    if (!html) return `<p><strong>${escapeHtml(title)}</strong></p><p>DOCX 内容为空。</p>`;
+    return html;
+  } catch {
+    return `<p><strong>${escapeHtml(title)}</strong></p><p>DOCX 解析失败，建议转换为 PDF 以保留原始版式。</p>`;
+  }
+}
+
+async function extractPptxPagesFromFile(fileObj, title) {
+  if (!window.JSZip || typeof window.JSZip.loadAsync !== "function") {
+    return [{ html: `<p><strong>${escapeHtml(title)}</strong></p><p>PPTX 解析依赖未加载，当前降级为占位展示。</p>`, highlights: [], marginNotes: [] }];
+  }
+  try {
+    const zip = await window.JSZip.loadAsync(await fileObj.arrayBuffer());
+    const slideFiles = Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+      .sort((a, b) => {
+        const na = Number((a.match(/slide(\d+)\.xml/i) || [])[1] || 0);
+        const nb = Number((b.match(/slide(\d+)\.xml/i) || [])[1] || 0);
+        return na - nb;
+      });
+    if (slideFiles.length === 0) {
+      return [{ html: `<p><strong>${escapeHtml(title)}</strong></p><p>未检测到可解析的幻灯片内容。</p>`, highlights: [], marginNotes: [] }];
+    }
+    const pages = [];
+    for (let i = 0; i < slideFiles.length; i += 1) {
+      const xml = await zip.files[slideFiles[i]].async("text");
+      const textMatches = [...String(xml || "").matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)];
+      const lines = textMatches
+        .map((m) => decodeXmlEntities(String(m[1] || "")))
+        .map((line) => line.replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+      const html = lines.length > 0
+        ? `<p><strong>Slide ${i + 1}</strong></p>${lines.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}`
+        : `<p><strong>Slide ${i + 1}</strong></p><p>该页暂无可提取文字。</p>`;
+      pages.push({ html, highlights: [], marginNotes: [] });
+    }
+    return pages;
+  } catch {
+    return [{ html: `<p><strong>${escapeHtml(title)}</strong></p><p>PPTX 解析失败，建议转换为 PDF 以保留原始版式。</p>`, highlights: [], marginNotes: [] }];
+  }
+}
+
+function decodeXmlEntities(text) {
+  return String(text || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'");
 }
 
 /**
@@ -2837,31 +3578,67 @@ async function openDocument(fileId) {
 }
 
 /**
- * 渲染工作区文件下拉。
+ * 渲染工作区「路径」下拉（第一步），并刷新「文件」列表（第二步）。
  */
 function populateWorkspaceFileOptions() {
-  const select = document.getElementById("workspace-file-select");
-  if (!select) return;
-  select.innerHTML = "";
-  const grouped = {};
-  appState.libraryFiles.forEach((file) => {
-    const path = buildCategoryPath(file.categoryId) || "未分类";
-    if (!grouped[path]) grouped[path] = [];
-    grouped[path].push(file);
+  const categorySelect = document.getElementById("workspace-category-select");
+  if (!categorySelect) return;
+
+  const categoryIdsWithFiles = [...new Set(appState.libraryFiles.map((f) => f.categoryId).filter(Boolean))];
+  const categoryOptions = [{ value: "", label: "全部" }];
+  categoryIdsWithFiles.forEach((cid) => {
+    categoryOptions.push({ value: cid, label: buildCategoryPath(cid) || "未分类" });
   });
-  Object.keys(grouped).forEach((path) => {
-    const group = document.createElement("optgroup");
-    group.label = path;
-    grouped[path].forEach((file) => {
-      const option = document.createElement("option");
-      option.value = file.id;
-      option.textContent = file.name;
-      if (file.id === appState.activeFileId) option.selected = true;
-      group.appendChild(option);
-    });
-    select.appendChild(group);
+  const activeFile = appState.libraryFiles.find((f) => f.id === appState.activeFileId);
+  const selectedCategoryId = activeFile ? (activeFile.categoryId || "") : "";
+
+  categorySelect.innerHTML = "";
+  categoryOptions.forEach((opt) => {
+    const option = document.createElement("option");
+    option.value = opt.value;
+    option.textContent = opt.label;
+    if (option.value === selectedCategoryId) option.selected = true;
+    categorySelect.appendChild(option);
   });
+
+  populateWorkspaceFileList();
   syncWorkspacePathDisplay();
+}
+
+/**
+ * 根据当前选中的路径和关键字，填充工作区「文件」下拉（第二步）。
+ */
+function populateWorkspaceFileList() {
+  const categorySelect = document.getElementById("workspace-category-select");
+  const fileSelect = document.getElementById("workspace-file-select");
+  const searchInput = document.getElementById("workspace-file-search");
+  if (!fileSelect) return;
+
+  const categoryId = categorySelect ? categorySelect.value : "";
+  const keyword = (searchInput && searchInput.value.trim()) || "";
+  const keywordLower = keyword.toLowerCase();
+
+  let files = appState.libraryFiles.filter((f) => !categoryId || f.categoryId === categoryId);
+  if (keywordLower) {
+    files = files.filter((f) => f.name.toLowerCase().includes(keywordLower));
+  }
+  files.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+  fileSelect.innerHTML = "";
+  files.forEach((file) => {
+    const option = document.createElement("option");
+    option.value = file.id;
+    option.textContent = file.name;
+    if (file.id === appState.activeFileId) option.selected = true;
+    fileSelect.appendChild(option);
+  });
+
+  syncWorkspacePathDisplay();
+
+  const selectedId = fileSelect.value;
+  if (selectedId && selectedId !== appState.activeFileId) {
+    void openDocument(selectedId);
+  }
 }
 
 /**
@@ -2891,12 +3668,16 @@ async function loadActiveWorkspaceFile() {
     reader.innerHTML = '<div class="note-item"><h4>暂无文件</h4><p>请先登录并上传资料，或在图书馆中选择文件。</p></div>';
     appState.totalDocPages = 1;
     appState.currentDocPage = 1;
-    renderHighlightList();
+    document.querySelector(".document-reader")?.classList.remove("is-pdf");
+    syncWorkspaceBrushUi();
+    syncWorkspaceTextUi();
+    renderWorkspaceNotes();
     renderWorkspaceNotes();
     renderWorkspaceVocab();
     syncSaveStatus();
     syncWorkspaceCompleteButton();
     syncPageIndicator();
+    syncWorkspaceZoomUi(null);
     return;
   }
   if (!appState.workspaceData[file.id]) {
@@ -2910,6 +3691,8 @@ async function loadActiveWorkspaceFile() {
       ],
       notes: [],
       vocab: [],
+      pageDrawings: {},
+      pageTexts: {},
       savedAt: null,
     };
   }
@@ -2934,17 +3717,564 @@ async function loadActiveWorkspaceFile() {
   appState.totalDocPages = data.pages.length;
   if (title) title.textContent = file.name;
   const page = data.pages[appState.currentDocPage - 1];
-  reader.innerHTML = `
-    <div class="paper-page">
-      <div class="paper-main" id="page-content">${page.html}</div>
-    </div>
-  `;
-  renderHighlightList();
+  await renderWorkspaceReaderPage(file, page, reader);
+  renderWorkspaceNotes();
   renderWorkspaceNotes();
   renderWorkspaceVocab();
   syncSaveStatus();
   syncWorkspaceCompleteButton();
   syncPageIndicator();
+  syncWorkspaceZoomUi(file);
+  syncWorkspaceBrushUi();
+  syncWorkspaceTextUi();
+  const docReader = document.querySelector(".document-reader");
+  if (docReader) docReader.classList.toggle("is-pdf", file.type === "PDF" && appState.workspaceViewMode !== "text");
+}
+
+/**
+ * 渲染工作区阅读页：PDF 默认使用“原版底图 + 可选文字层”，其余文档使用富文本模式。
+ * @param {{id:string,type:string,name:string}} file 当前文件。
+ * @param {{html:string}} page 当前页对象。
+ * @param {HTMLElement} reader 阅读区容器。
+ */
+async function renderWorkspaceReaderPage(file, page, reader) {
+  const shouldUsePdfOriginal = file.type === "PDF" && appState.workspaceViewMode !== "text";
+  if (!shouldUsePdfOriginal) {
+    reader.innerHTML = `
+      <div class="paper-page">
+        <div class="paper-main" id="page-content">${page.html}</div>
+      </div>
+    `;
+    return;
+  }
+  const renderToken = ++runtimeState.pdf.renderToken;
+  const readerWidth = Math.max(420, Math.floor(reader.clientWidth || 860));
+  const tempWrap = document.createElement("div");
+  tempWrap.style.cssText = "position:absolute;left:-9999px;top:0;width:" + readerWidth + "px;";
+  tempWrap.innerHTML = `
+    <div class="paper-page pdf-paper-page">
+      <div class="paper-main pdf-layer-host" id="page-content" data-pdf-view="true"></div>
+    </div>
+  `;
+  document.body.appendChild(tempWrap);
+  const host = tempWrap.querySelector("#page-content");
+  const ok = host && (await renderPdfOriginalLayer(file.id, appState.currentDocPage, host, renderToken));
+  if (ok && renderToken === runtimeState.pdf.renderToken) {
+    const pageEl = tempWrap.querySelector(".paper-page");
+    if (pageEl) {
+      reader.innerHTML = "";
+      reader.appendChild(pageEl);
+    }
+    setTimeout(() => {
+      const readerContainer = document.getElementById("reader-content");
+      if (readerContainer) {
+        const left = Math.max(0, Math.round((readerContainer.scrollWidth - readerContainer.clientWidth) / 2));
+        readerContainer.scrollLeft = left;
+      }
+    }, 0);
+  } else {
+    reader.innerHTML = `
+      <div class="paper-page">
+        <div class="paper-main" id="page-content" data-pdf-view="false">${page.html}</div>
+      </div>
+    `;
+  }
+  tempWrap.remove();
+}
+
+/**
+ * 获取并缓存指定文件的 PDFDocument。
+ * @param {string} fileId 文件 id。
+ * @returns {Promise<any|null>} PDF 文档实例。
+ */
+async function getCachedPdfDoc(fileId) {
+  if (!fileId || typeof window.pdfjsLib === "undefined") return null;
+  if (runtimeState.pdf.docCache[fileId]) return runtimeState.pdf.docCache[fileId];
+  const blob = await getPdfBlob(fileId);
+  if (!blob) return null;
+  try {
+    const buffer = await blob.arrayBuffer();
+    const promise = window.pdfjsLib.getDocument({ data: buffer }).promise;
+    runtimeState.pdf.docCache[fileId] = promise;
+    return await promise;
+  } catch {
+    delete runtimeState.pdf.docCache[fileId];
+    return null;
+  }
+}
+
+/**
+ * 渲染 PDF 原版层（canvas）和可选文字层（text layer）。
+ * @param {string} fileId 文件 id。
+ * @param {number} pageNumber 页码（1-based）。
+ * @param {HTMLElement} host 容器节点。
+ * @param {number} renderToken 渲染令牌，避免异步串页。
+ * @returns {Promise<boolean>} 是否渲染成功。
+ */
+async function renderPdfOriginalLayer(fileId, pageNumber, host, renderToken) {
+  const doc = await getCachedPdfDoc(fileId);
+  if (!doc || !host) return false;
+  if (renderToken !== runtimeState.pdf.renderToken) return false;
+  try {
+    const safePage = Math.min(Math.max(1, Number(pageNumber || 1)), Number(doc.numPages || 1));
+    const page = await doc.getPage(safePage);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const hostWidth = Math.max(420, Math.floor(host.clientWidth || 860));
+    const fitScale = hostWidth / Math.max(1, baseViewport.width);
+    const zoomFactor = Math.max(0.4, Math.min(4, Number(appState.workspacePdfZoom || 100) / 100));
+    const scale = fitScale * zoomFactor;
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf-layer-canvas";
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return false;
+    canvas.width = Math.floor(viewport.width);
+    canvas.height = Math.floor(viewport.height);
+    await page.render({ canvasContext: context, viewport }).promise;
+    if (renderToken !== runtimeState.pdf.renderToken) return false;
+    const textLayer = document.createElement("div");
+    textLayer.className = "pdf-text-layer";
+    const textContent = await page.getTextContent();
+    const items = Array.isArray(textContent?.items) ? textContent.items : [];
+    items.forEach((item, index) => {
+      const text = String(item.str || "");
+      if (!text.trim()) return;
+      const tx = window.pdfjsLib.Util.transform(viewport.transform, item.transform);
+      const angle = Math.atan2(tx[1], tx[0]);
+      const fontHeight = Math.hypot(tx[2], tx[3]);
+      const div = document.createElement("span");
+      div.textContent = text;
+      div.dataset.token = `p${safePage}-t${index}`;
+      div.dataset.rawText = text;
+      div.style.left = `${tx[4]}px`;
+      div.style.top = `${tx[5] - fontHeight}px`;
+      div.style.fontSize = `${fontHeight}px`;
+      div.style.transform = `rotate(${angle}rad)`;
+      textLayer.appendChild(div);
+    });
+    const layerPage = document.createElement("div");
+    layerPage.className = "pdf-layer-page";
+    layerPage.style.width = `${canvas.width}px`;
+    layerPage.style.height = `${canvas.height}px`;
+    layerPage.appendChild(canvas);
+    layerPage.appendChild(textLayer);
+    const textAnnLayer = document.createElement("div");
+    textAnnLayer.className = "pdf-text-annotations";
+    layerPage.appendChild(textAnnLayer);
+    const drawCanvas = document.createElement("canvas");
+    drawCanvas.className = "pdf-draw-layer";
+    drawCanvas.width = canvas.width;
+    drawCanvas.height = canvas.height;
+    drawCanvas.style.width = `${canvas.width}px`;
+    drawCanvas.style.height = `${canvas.height}px`;
+    layerPage.appendChild(drawCanvas);
+    host.innerHTML = "";
+    host.appendChild(layerPage);
+    host.dataset.pdfView = "true";
+    const activePage = getActiveWorkspacePage();
+    if (activePage) {
+      applyPdfHighlightsToLayer(textLayer, activePage.highlights || []);
+    }
+    setupPdfPageTextAnnotations(textAnnLayer, layerPage, fileId, safePage, canvas.width, canvas.height);
+    setupPdfDrawLayer(drawCanvas, fileId, safePage);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const PDF_DRAW_WIDTH = 2;
+
+const WORKSPACE_BRUSH_COLORS = [
+  "#1a1a2e",
+  "#e94560",
+  "#2563eb",
+  "#16a34a",
+  "#f59e0b",
+  "#7c3aed",
+];
+
+function toggleWorkspaceText() {
+  runtimeState.ui.workspaceTextMode = !runtimeState.ui.workspaceTextMode;
+  if (runtimeState.ui.workspaceTextMode) {
+    runtimeState.ui.workspaceBrushOn = false;
+    syncWorkspaceBrushUi();
+  }
+  syncWorkspaceTextUi();
+}
+
+function toggleWorkspaceBrush() {
+  runtimeState.ui.workspaceBrushOn = !runtimeState.ui.workspaceBrushOn;
+  if (runtimeState.ui.workspaceBrushOn) {
+    runtimeState.ui.workspaceTextMode = false;
+    syncWorkspaceTextUi();
+  }
+  syncWorkspaceBrushUi();
+}
+
+function syncWorkspaceTextUi() {
+  const btn = document.getElementById("workspace-text-btn");
+  if (btn) btn.classList.toggle("active", runtimeState.ui.workspaceTextMode);
+  document.querySelector(".document-reader")?.classList.toggle("text-mode-on", runtimeState.ui.workspaceTextMode);
+}
+
+function setWorkspaceBrushMode(mode) {
+  if (mode !== "free" && mode !== "rect") return;
+  appState.workspaceBrushMode = mode;
+  persistLocalState();
+  syncWorkspaceBrushUi();
+}
+
+function setWorkspaceBrushColor(hex) {
+  if (typeof hex !== "string" || !/^#[0-9a-fA-F]{3,8}$/.test(hex)) return;
+  appState.workspaceBrushColor = hex;
+  persistLocalState();
+  syncWorkspaceBrushUi();
+}
+
+function syncWorkspaceBrushUi() {
+  const btn = document.getElementById("workspace-brush-btn");
+  const options = document.getElementById("workspace-brush-options");
+  if (btn) btn.classList.toggle("active", runtimeState.ui.workspaceBrushOn);
+  if (options) {
+    options.classList.toggle("on", runtimeState.ui.workspaceBrushOn);
+    options.setAttribute("aria-hidden", runtimeState.ui.workspaceBrushOn ? "false" : "true");
+  }
+  document.querySelector(".document-reader")?.classList.toggle("brush-on", runtimeState.ui.workspaceBrushOn);
+  document.querySelectorAll(".brush-mode-btn").forEach((el) => {
+    el.classList.toggle("active", el.dataset.mode === appState.workspaceBrushMode);
+  });
+  const colorContainer = document.getElementById("workspace-brush-colors");
+  if (colorContainer) {
+    colorContainer.innerHTML = "";
+    WORKSPACE_BRUSH_COLORS.forEach((hex) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "brush-color-chip" + (appState.workspaceBrushColor === hex ? " active" : "");
+      chip.style.backgroundColor = hex;
+      chip.title = hex;
+      chip.addEventListener("click", () => setWorkspaceBrushColor(hex));
+      colorContainer.appendChild(chip);
+    });
+  }
+}
+
+/**
+ * 在 PDF 原图页上挂载画笔层：绘制、持久化并同步到云端。
+ * @param {HTMLCanvasElement} drawCanvas 绘制用 canvas，尺寸已与 PDF 页一致。
+ * @param {string} fileId 当前文件 id。
+ * @param {number} pageNumber 当前页码（1-based）。
+ */
+/**
+ * 在 PDF 页上挂载“写文本”层：展示、添加、编辑、删除页面上的文本块，并持久化。
+ */
+function setupPdfPageTextAnnotations(textAnnLayer, layerPage, fileId, pageNumber, pageWidth, pageHeight) {
+  if (!textAnnLayer || !fileId) return;
+  const pageIndex = String(Math.max(0, pageNumber - 1));
+  const data = appState.workspaceData[fileId];
+  if (!data) return;
+  if (!data.pageTexts || typeof data.pageTexts !== "object") data.pageTexts = {};
+  if (!Array.isArray(data.pageTexts[pageIndex])) data.pageTexts[pageIndex] = [];
+
+  function renderBlocks() {
+    textAnnLayer.innerHTML = "";
+    const blocks = data.pageTexts[pageIndex] || [];
+    blocks.forEach((block) => {
+      const el = document.createElement("div");
+      el.className = "pdf-text-block";
+      el.dataset.id = block.id;
+      el.style.left = (Number(block.x) * 100) + "%";
+      el.style.top = (Number(block.y) * 100) + "%";
+      const text = String(block.text || "").trim() || "（无内容）";
+      el.innerHTML = `
+        <div class="pdf-text-block-content">${escapeHtml(text)}</div>
+        <div class="pdf-text-block-actions">
+          <button type="button" class="pdf-text-block-edit" title="编辑">✎</button>
+          <button type="button" class="pdf-text-block-del" title="删除">×</button>
+        </div>
+      `;
+      const contentEl = el.querySelector(".pdf-text-block-content");
+      const editBtn = el.querySelector(".pdf-text-block-edit");
+      const delBtn = el.querySelector(".pdf-text-block-del");
+      editBtn?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        startEditPdfTextBlock(el, block);
+      });
+      delBtn?.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const arr = data.pageTexts[pageIndex];
+        const i = arr.findIndex((b) => b.id === block.id);
+        if (i >= 0) { arr.splice(i, 1); persistLocalState(); renderBlocks(); }
+      });
+      textAnnLayer.appendChild(el);
+    });
+  }
+
+  function startEditPdfTextBlock(containerEl, block) {
+    const text = String(block.text || "").trim();
+    containerEl.innerHTML = `
+      <textarea class="pdf-text-block-input" rows="3">${escapeHtml(text)}</textarea>
+      <div class="pdf-text-block-form-actions">
+        <button type="button" class="btn-primary pdf-text-block-save">保存</button>
+        <button type="button" class="btn-secondary pdf-text-block-cancel">取消</button>
+      </div>
+    `;
+    const textarea = containerEl.querySelector(".pdf-text-block-input");
+    const saveBtn = containerEl.querySelector(".pdf-text-block-save");
+    const cancelBtn = containerEl.querySelector(".pdf-text-block-cancel");
+    saveBtn?.addEventListener("click", () => {
+      const next = String(textarea?.value || "").trim();
+      block.text = next;
+      persistLocalState();
+      renderBlocks();
+    });
+    cancelBtn?.addEventListener("click", () => renderBlocks());
+    textarea?.focus();
+  }
+
+  function addNewBlockAt(normX, normY) {
+    const id = "text-" + Date.now();
+    const block = { id, x: normX, y: normY, text: "" };
+    data.pageTexts[pageIndex].push(block);
+    persistLocalState();
+    renderBlocks();
+    const el = textAnnLayer.querySelector(`[data-id="${id}"]`);
+    if (el) startEditPdfTextBlock(el, block);
+  }
+
+  renderBlocks();
+
+  textAnnLayer.addEventListener("click", (e) => {
+    if (!runtimeState.ui.workspaceTextMode) return;
+    if (e.target.closest(".pdf-text-block")) return;
+    const rect = layerPage.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / (rect.width || 1);
+    const y = (e.clientY - rect.top) / (rect.height || 1);
+    const normX = Math.max(0, Math.min(1, x));
+    const normY = Math.max(0, Math.min(1, y));
+    addNewBlockAt(normX, normY);
+  });
+}
+
+function setupPdfDrawLayer(drawCanvas, fileId, pageNumber) {
+  if (!drawCanvas || !fileId) return;
+  const ctx = drawCanvas.getContext("2d", { alpha: true });
+  if (!ctx) return;
+  const pageIndex = String(Math.max(0, pageNumber - 1));
+  const data = appState.workspaceData[fileId];
+  if (!data) return;
+  if (!data.pageDrawings || typeof data.pageDrawings !== "object") data.pageDrawings = {};
+  if (!Array.isArray(data.pageDrawings[pageIndex])) data.pageDrawings[pageIndex] = [];
+
+  function getBrushColor() {
+    return typeof appState.workspaceBrushColor === "string" && /^#[0-9a-fA-F]{3,8}$/.test(appState.workspaceBrushColor)
+      ? appState.workspaceBrushColor
+      : "#1a1a2e";
+  }
+  function getBrushMode() {
+    return appState.workspaceBrushMode === "rect" ? "rect" : "free";
+  }
+
+  function redrawStrokes() {
+    const w = drawCanvas.width;
+    const h = drawCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const strokes = data.pageDrawings[pageIndex] || [];
+    strokes.forEach((stroke) => {
+      const color = typeof stroke.color === "string" ? stroke.color : "#1a1a2e";
+      const width = typeof stroke.width === "number" ? stroke.width : PDF_DRAW_WIDTH;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      if (stroke.type === "rect") {
+        const pts = Array.isArray(stroke.points) ? stroke.points : [];
+        if (pts.length >= 2) {
+          const x1 = Math.min(pts[0].x, pts[1].x) * w;
+          const y1 = Math.min(pts[0].y, pts[1].y) * h;
+          const x2 = Math.max(pts[0].x, pts[1].x) * w;
+          const y2 = Math.max(pts[0].y, pts[1].y) * h;
+          ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        }
+        return;
+      }
+      const points = Array.isArray(stroke.points) ? stroke.points : [];
+      if (points.length < 2) return;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(points[0].x * w, points[0].y * h);
+      for (let i = 1; i < points.length; i++) {
+        ctx.lineTo(points[i].x * w, points[i].y * h);
+      }
+      ctx.stroke();
+    });
+  }
+
+  redrawStrokes();
+
+  function getCoords(e) {
+    const rect = drawCanvas.getBoundingClientRect();
+    const scaleX = drawCanvas.width / (rect.width || 1);
+    const scaleY = drawCanvas.height / (rect.height || 1);
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+    return { x: x / drawCanvas.width, y: y / drawCanvas.height };
+  }
+
+  let currentStroke = null;
+  let rectEnd = null;
+
+  function startStroke(e) {
+    if (!runtimeState.ui.workspaceBrushOn) return;
+    e.preventDefault();
+    drawCanvas.setPointerCapture(e.pointerId);
+    const { x, y } = getCoords(e);
+    const color = getBrushColor();
+    const mode = getBrushMode();
+    if (mode === "rect") {
+      currentStroke = { type: "rect", points: [{ x, y }], color, width: PDF_DRAW_WIDTH };
+      rectEnd = { x, y };
+    } else {
+      currentStroke = { points: [{ x, y }], color, width: PDF_DRAW_WIDTH };
+    }
+  }
+
+  function moveStroke(e) {
+    if (!currentStroke) return;
+    e.preventDefault();
+    const { x, y } = getCoords(e);
+    const w = drawCanvas.width;
+    const h = drawCanvas.height;
+    if (currentStroke.type === "rect") {
+      rectEnd = { x, y };
+      redrawStrokes();
+      ctx.strokeStyle = currentStroke.color;
+      ctx.lineWidth = currentStroke.width;
+      const p0 = currentStroke.points[0];
+      const x1 = Math.min(p0.x, rectEnd.x) * w;
+      const y1 = Math.min(p0.y, rectEnd.y) * h;
+      const x2 = Math.max(p0.x, rectEnd.x) * w;
+      const y2 = Math.max(p0.y, rectEnd.y) * h;
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+      return;
+    }
+    currentStroke.points.push({ x, y });
+    ctx.strokeStyle = currentStroke.color;
+    ctx.lineWidth = currentStroke.width;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    const pts = currentStroke.points;
+    ctx.moveTo(pts[pts.length - 2].x * w, pts[pts.length - 2].y * h);
+    ctx.lineTo(pts[pts.length - 1].x * w, pts[pts.length - 1].y * h);
+    ctx.stroke();
+  }
+
+  function endStroke(e) {
+    e.preventDefault();
+    try { drawCanvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    if (!currentStroke) return;
+    if (currentStroke.type === "rect") {
+      if (rectEnd) currentStroke.points.push(rectEnd);
+      rectEnd = null;
+      if (currentStroke.points.length >= 2) {
+        data.pageDrawings[pageIndex].push(currentStroke);
+        persistLocalState();
+      }
+    } else if (currentStroke.points.length >= 2) {
+      data.pageDrawings[pageIndex].push(currentStroke);
+      persistLocalState();
+    }
+    currentStroke = null;
+  }
+
+  drawCanvas.addEventListener("pointerdown", startStroke);
+  drawCanvas.addEventListener("pointermove", moveStroke);
+  drawCanvas.addEventListener("pointerup", endStroke);
+  drawCanvas.addEventListener("pointerleave", endStroke);
+  drawCanvas.addEventListener("touchstart", (e) => e.preventDefault(), { passive: false });
+}
+
+function applyPdfHighlightsToLayer(textLayer, highlights) {
+  if (!textLayer) return;
+  textLayer.querySelectorAll("span").forEach((span) => {
+    span.classList.remove("text-highlight");
+    span.style.backgroundColor = "";
+    span.textContent = String(span.dataset.rawText || span.textContent || "");
+  });
+  if (!Array.isArray(highlights) || highlights.length === 0) return;
+  const tokenMap = new Map();
+  highlights.forEach((item) => {
+    const color = HIGHLIGHT_COLORS[item?.color] ? item.color : "yellow";
+    const style = HIGHLIGHT_STYLES[item?.style] ? item.style : "fill";
+    const segments = Array.isArray(item?.spanSegments) ? item.spanSegments : [];
+    if (segments.length > 0) {
+      segments.forEach((seg) => {
+        const token = String(seg?.token || "");
+        if (!token) return;
+        const list = tokenMap.get(token) || [];
+        list.push({
+          start: Math.max(0, Number(seg?.start || 0)),
+          end: Math.max(0, Number(seg?.end || 0)),
+          color,
+          style,
+        });
+        tokenMap.set(token, list);
+      });
+      return;
+    }
+    const tokens = Array.isArray(item?.spanTokens) ? item.spanTokens : [];
+    tokens.forEach((token) => {
+      const key = String(token || "");
+      if (!key) return;
+      const list = tokenMap.get(key) || [];
+      list.push({ start: 0, end: Number.MAX_SAFE_INTEGER, color, style });
+      tokenMap.set(key, list);
+    });
+  });
+  tokenMap.forEach((ranges, token) => {
+    const span = textLayer.querySelector(`span[data-token="${token}"]`);
+    if (!span) return;
+    paintPdfSpanRanges(span, ranges);
+  });
+}
+
+function paintPdfSpanRanges(span, ranges) {
+  const raw = String(span.dataset.rawText || "");
+  if (!raw) return;
+  const normalized = (Array.isArray(ranges) ? ranges : [])
+    .map((item) => ({
+      start: Math.max(0, Math.min(raw.length, Number(item.start || 0))),
+      end: Math.max(0, Math.min(raw.length, Number(item.end || 0))),
+      color: HIGHLIGHT_COLORS[item.color] ? item.color : "yellow",
+      style: HIGHLIGHT_STYLES[item.style] ? item.style : "fill",
+    }))
+    .filter((item) => item.end > item.start)
+    .sort((a, b) => a.start - b.start || a.end - b.end);
+  if (normalized.length === 0) {
+    span.textContent = raw;
+    return;
+  }
+  span.innerHTML = "";
+  let cursor = 0;
+  normalized.forEach((item) => {
+    if (item.start > cursor) {
+      span.appendChild(document.createTextNode(raw.slice(cursor, item.start)));
+    }
+    const mark = document.createElement("span");
+    mark.className = `text-highlight ${item.style === "underline" ? "highlight-underline" : "highlight-fill"}`;
+    mark.style.setProperty("--hl-color", HIGHLIGHT_COLORS[item.color].rgba);
+    if (item.style === "underline") {
+      mark.style.borderBottomColor = HIGHLIGHT_COLORS[item.color].rgba;
+    }
+    mark.textContent = raw.slice(item.start, item.end);
+    span.appendChild(mark);
+    cursor = Math.max(cursor, item.end);
+  });
+  if (cursor < raw.length) {
+    span.appendChild(document.createTextNode(raw.slice(cursor)));
+  }
 }
 
 /**
@@ -2981,11 +4311,34 @@ function applyHighlightFromSelection() {
     showAppAlert("请先选中要高亮的文本。");
     return;
   }
+  const selectedText = selection.toString().trim();
+  const color = HIGHLIGHT_COLORS[appState.highlightColor] ? appState.highlightColor : "yellow";
+  const style = HIGHLIGHT_STYLES[appState.highlightStyle] ? appState.highlightStyle : "fill";
+  if (pageContent.dataset.pdfView === "true") {
+    const segments = getPdfSelectionSegments(range, pageContent);
+    if (segments.length === 0) {
+      showAppAlert("当前选区未命中可高亮文本，请重新选择。");
+      return;
+    }
+    registerHighlight(selectedText, { color, style, spanSegments: segments });
+    const page = getActiveWorkspacePage();
+    const textLayer = pageContent.querySelector(".pdf-text-layer");
+    if (page && textLayer) {
+      applyPdfHighlightsToLayer(textLayer, page.highlights || []);
+    }
+    selection.removeAllRanges();
+    saveWorkspaceProgress(false);
+    return;
+  }
   const span = document.createElement("span");
-  span.className = "text-highlight";
+  span.className = `text-highlight ${style === "underline" ? "highlight-underline" : "highlight-fill"}`;
+  span.style.setProperty("--hl-color", HIGHLIGHT_COLORS[color].rgba);
+  if (style === "underline") {
+    span.style.borderBottomColor = HIGHLIGHT_COLORS[color].rgba;
+  }
   try {
     range.surroundContents(span);
-    registerHighlight(selection.toString().trim());
+    registerHighlight(selectedText, { color, style });
     selection.removeAllRanges();
     saveWorkspaceProgress(false);
   } catch {
@@ -2996,18 +4349,104 @@ function applyHighlightFromSelection() {
 /**
  * 记录当前页高亮文本，便于右侧查看学习痕迹。
  * @param {string} text 高亮文本。
+ * @param {{color?:string,style?:string,spanTokens?:string[],spanSegments?:Array<{token:string,start:number,end:number}>}} options 额外信息。
  */
-function registerHighlight(text) {
+function registerHighlight(text, options = {}) {
   if (!text) return;
   const page = getActiveWorkspacePage();
   if (!page) return;
   if (!Array.isArray(page.highlights)) page.highlights = [];
+  const color = HIGHLIGHT_COLORS[options.color] ? options.color : "yellow";
+  const style = HIGHLIGHT_STYLES[options.style] ? options.style : "fill";
+  const spanTokens = Array.isArray(options.spanTokens) ? options.spanTokens : [];
+  const spanSegments = Array.isArray(options.spanSegments) ? options.spanSegments : [];
   page.highlights.push({
     id: `hl-${Date.now()}`,
     text,
+    color,
+    style,
+    spanTokens,
+    spanSegments,
+    meaning: "",
     createdAt: new Date().toISOString().split("T")[0],
   });
-  renderHighlightList();
+  renderWorkspaceNotes();
+}
+
+function getPdfSelectionSegments(range, pageContent) {
+  if (!range || !pageContent) return [];
+  const textLayer = pageContent.querySelector(".pdf-text-layer");
+  if (!textLayer) return [];
+  const spans = Array.from(textLayer.querySelectorAll("span[data-token]"));
+  if (spans.length === 0) return [];
+  const tokenIndex = new Map();
+  spans.forEach((span, idx) => tokenIndex.set(String(span.dataset.token || ""), idx));
+  const start = resolvePdfSelectionPoint(range.startContainer, range.startOffset, spans, tokenIndex);
+  const end = resolvePdfSelectionPoint(range.endContainer, range.endOffset, spans, tokenIndex);
+  if (!start || !end) return [];
+  let first = start;
+  let last = end;
+  if (first.index > last.index || (first.index === last.index && first.offset > last.offset)) {
+    first = end;
+    last = start;
+  }
+  const segments = [];
+  for (let i = first.index; i <= last.index; i += 1) {
+    const span = spans[i];
+    const token = String(span.dataset.token || "");
+    const raw = String(span.dataset.rawText || span.textContent || "");
+    if (!token || !raw) continue;
+    const startOffset = i === first.index ? first.offset : 0;
+    const endOffset = i === last.index ? last.offset : raw.length;
+    if (endOffset <= startOffset) continue;
+    segments.push({
+      token,
+      start: startOffset,
+      end: endOffset,
+    });
+  }
+  return segments;
+}
+
+function resolvePdfSelectionPoint(container, offset, spans, tokenIndex) {
+  const span = findTokenSpan(container);
+  if (span && tokenIndex.has(String(span.dataset.token || ""))) {
+    const raw = String(span.dataset.rawText || span.textContent || "");
+    const charOffset = normalizeSelectionOffsetInSpan(container, offset, span, raw.length);
+    return {
+      index: tokenIndex.get(String(span.dataset.token || "")),
+      offset: charOffset,
+    };
+  }
+  for (let i = 0; i < spans.length; i += 1) {
+    try {
+      if (spans[i].contains(container)) {
+        const raw = String(spans[i].dataset.rawText || spans[i].textContent || "");
+        return { index: i, offset: Math.max(0, Math.min(raw.length, Number(offset || 0))) };
+      }
+    } catch {
+    }
+  }
+  return null;
+}
+
+function findTokenSpan(node) {
+  let cursor = node;
+  while (cursor && cursor !== document) {
+    if (cursor instanceof HTMLElement && cursor.dataset && cursor.dataset.token) return cursor;
+    cursor = cursor.parentNode;
+  }
+  return null;
+}
+
+function normalizeSelectionOffsetInSpan(container, offset, span, length) {
+  if (container instanceof Text) {
+    return Math.max(0, Math.min(length, Number(offset || 0)));
+  }
+  if (container === span) {
+    return Math.max(0, Math.min(length, Number(offset || 0)));
+  }
+  return Math.max(0, Math.min(length, Number(offset || 0)));
 }
 
 /**
@@ -3056,6 +4495,7 @@ function addNoteToActiveFile(text, source) {
   appState.workspaceData[fileId].notes.push({
     id: `note-${Date.now()}`,
     text,
+    meaning: "",
     source,
     createdAt: new Date().toISOString().split("T")[0],
   });
@@ -3066,30 +4506,51 @@ function addNoteToActiveFile(text, source) {
 }
 
 /**
- * 渲染当前文件的笔记列表。
+ * 获取统一条目的时间戳（高亮或笔记），用于排序。
+ */
+function getUnifiedTimestamp(entry) {
+  if (entry.type === "highlight") {
+    const createdAt = String(entry.createdAt || "").trim();
+    if (createdAt) {
+      const t = new Date(createdAt).getTime();
+      if (!Number.isNaN(t)) return t;
+    }
+    const match = String(entry.id || "").match(/hl-(\d+)/);
+    if (match) return Number(match[1]);
+    return 0;
+  }
+  return getNoteTimestamp(entry);
+}
+
+/**
+ * 渲染当前文件的笔记列表（高亮与手动笔记合并为一条列表）。
  */
 function renderWorkspaceNotes() {
   const list = document.getElementById("notes-list");
   if (!list) return;
   list.innerHTML = "";
   const fileId = appState.activeFileId;
+  const page = getActiveWorkspacePage();
+  const highlights = (page?.highlights || []).map((h) => ({ type: "highlight", ...h, meaning: h.meaning || "" }));
   const rawNotes = appState.workspaceData[fileId]?.notes || [];
-  if (rawNotes.length === 0) {
+  const notes = rawNotes.map((n) => ({ type: "note", ...n, meaning: n.meaning || "" }));
+  const merged = [...highlights, ...notes];
+  if (merged.length === 0) {
     updateNotesPaginationUI(1, 1, 0);
     syncNotesToolbarUi(0);
-    list.innerHTML = '<div class="note-item"><h4>暂无笔记</h4><p>可以手动记录，也可以选中文本快速做笔记。</p></div>';
+    list.innerHTML = '<div class="note-item"><h4>暂无笔记</h4><p>选中文本后点击「高亮并做笔记」，或下方手动添加笔记。</p></div>';
     return;
   }
   const query = String(appState.notesSearchQuery || "").trim().toLowerCase();
-  const filtered = rawNotes.filter((note) => {
+  const filtered = merged.filter((entry) => {
     if (!query) return true;
-    const text = String(note?.text || "").toLowerCase();
-    const meaning = String(note?.meaning || "").toLowerCase();
+    const text = String(entry?.text || "").toLowerCase();
+    const meaning = String(entry?.meaning || "").toLowerCase();
     return text.includes(query) || meaning.includes(query);
   });
   const sort = appState.notesSort === "oldest" ? "oldest" : "newest";
   filtered.sort((a, b) => {
-    const diff = getNoteTimestamp(b) - getNoteTimestamp(a);
+    const diff = getUnifiedTimestamp(b) - getUnifiedTimestamp(a);
     return sort === "newest" ? diff : -diff;
   });
   const pageSize = sanitizeCount(String(appState.notesPageSize || 10), 6, 16);
@@ -3099,17 +4560,126 @@ function renderWorkspaceNotes() {
   appState.notesPageSize = pageSize;
   const startIndex = (currentPage - 1) * pageSize;
   const endIndex = startIndex + pageSize;
-  const pagedNotes = filtered.slice(startIndex, endIndex);
+  const paged = filtered.slice(startIndex, endIndex);
   updateNotesPaginationUI(currentPage, totalPages, filtered.length);
   syncNotesToolbarUi(filtered.length);
-  if (pagedNotes.length === 0) {
+  if (paged.length === 0) {
     list.innerHTML = '<div class="note-item"><h4>无匹配结果</h4><p>尝试调整搜索关键词。</p></div>';
     return;
   }
-  pagedNotes.forEach((note) => {
-    const item = createWorkspaceNoteItem(note);
+  paged.forEach((entry) => {
+    const item = createUnifiedNoteItem(entry);
     list.appendChild(item);
   });
+}
+
+/**
+ * 创建一条合并列表项（高亮或手动笔记），可编辑释义/内容、删除。
+ */
+function createUnifiedNoteItem(entry) {
+  const item = document.createElement("div");
+  item.className = "note-item";
+  const createdAt = escapeHtml(entry.createdAt || "");
+  const meaningLine = entry.meaning
+    ? `<p class="note-meta note-body">释义：${escapeHtml(entry.meaning)}</p>`
+    : "";
+
+  if (entry.type === "highlight") {
+    const color = HIGHLIGHT_COLORS[entry.color] ? entry.color : "yellow";
+    const style = HIGHLIGHT_STYLES[entry.style] ? entry.style : "fill";
+    item.innerHTML = `<div class="note-title-row"><div class="note-actions"><span class="priority-badge" style="background:${HIGHLIGHT_COLORS[color].rgba};color:#334155;border:1px solid rgba(100,116,139,0.2)">高亮</span><button class="btn-secondary btn-small">编辑</button><button class="note-delete-btn todo-action-btn todo-delete-btn">删除</button></div><span class="note-meta">${createdAt}</span></div><p class="note-body">${escapeHtml(entry.text)}</p>${meaningLine}`;
+    const editBtn = item.querySelector(".btn-secondary");
+    const delBtn = item.querySelector(".note-delete-btn");
+    editBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      startEditWorkspaceHighlight(item, entry);
+    });
+    delBtn?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteHighlightById(entry.id);
+    });
+    return item;
+  }
+
+  if (appState.notesSelectionEnabled) {
+    const checked = appState.selectedNoteIds.includes(entry.id) ? "checked" : "";
+    item.innerHTML = `<div class="note-title-row"><div class="note-actions"><input type="checkbox" class="file-select" ${checked}></div><span class="note-meta">${createdAt}</span></div><p class="note-body">${escapeHtml(entry.text)}</p>${meaningLine}`;
+    const checkbox = item.querySelector("input[type=\"checkbox\"]");
+    checkbox?.addEventListener("click", (e) => { e.stopPropagation(); toggleSelectNote(entry.id); });
+    item.addEventListener("click", () => toggleSelectNote(entry.id));
+    return item;
+  }
+  item.innerHTML = `<div class="note-title-row"><div class="note-actions"><span class="priority-badge note-badge">笔记</span><button class="btn-secondary btn-small">编辑</button><button class="note-delete-btn todo-action-btn todo-delete-btn">删除</button></div><span class="note-meta">${createdAt}</span></div><p class="note-body">${escapeHtml(entry.text)}</p>${meaningLine}`;
+  const editBtn = item.querySelector(".btn-secondary");
+  const delBtn = item.querySelector(".note-delete-btn");
+  editBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    startEditWorkspaceNote(item, entry);
+  });
+  delBtn?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    deleteNoteById(entry.id);
+  });
+  return item;
+}
+
+/**
+ * 编辑高亮条目的笔记内容与释义。
+ */
+function startEditWorkspaceHighlight(container, highlight) {
+  const page = getActiveWorkspacePage();
+  if (!page || !highlight) return;
+  container.innerHTML = "";
+  const wrap = document.createElement("div");
+  wrap.className = "note-edit-area";
+  const textLabel = document.createElement("label");
+  textLabel.className = "note-edit-label";
+  textLabel.textContent = "笔记内容";
+  const textArea = document.createElement("textarea");
+  textArea.className = "setting-input";
+  textArea.rows = 3;
+  textArea.placeholder = "高亮对应的笔记内容";
+  textArea.value = String(highlight.text || "");
+  const meaningLabel = document.createElement("label");
+  meaningLabel.className = "note-edit-label";
+  meaningLabel.textContent = "释义（可选）";
+  const meaningInput = document.createElement("input");
+  meaningInput.type = "text";
+  meaningInput.className = "setting-input";
+  meaningInput.placeholder = "添加释义";
+  meaningInput.value = String(highlight.meaning || "");
+  const actions = document.createElement("div");
+  actions.className = "note-actions";
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "btn-primary";
+  saveBtn.textContent = "保存";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn-secondary";
+  cancelBtn.textContent = "取消";
+  actions.appendChild(saveBtn);
+  actions.appendChild(cancelBtn);
+  wrap.appendChild(textLabel);
+  wrap.appendChild(textArea);
+  wrap.appendChild(meaningLabel);
+  wrap.appendChild(meaningInput);
+  wrap.appendChild(actions);
+  container.appendChild(wrap);
+  saveBtn.addEventListener("click", () => {
+    const nextText = String(textArea.value || "").trim();
+    const nextMeaning = String(meaningInput.value || "").trim();
+    if (!nextText) {
+      showAppAlert("请输入笔记内容。");
+      return;
+    }
+    const h = page.highlights.find((x) => x.id === highlight.id);
+    if (h) {
+      h.text = nextText;
+      h.meaning = nextMeaning;
+    }
+    renderWorkspaceNotes();
+    saveWorkspaceProgress(false);
+  });
+  cancelBtn.addEventListener("click", () => renderWorkspaceNotes());
 }
 
 /**
@@ -3143,10 +4713,10 @@ function createWorkspaceNoteItem(note) {
   const item = document.createElement("div");
   item.className = "note-item";
   const createdAt = escapeHtml(note.createdAt || "");
-  const meaningLine = note.meaning ? `<p class="note-meta">释义：${escapeHtml(note.meaning)}</p>` : "";
+  const meaningLine = note.meaning ? `<p class="note-meta note-body">释义：${escapeHtml(note.meaning)}</p>` : "";
   if (appState.notesSelectionEnabled) {
     const checked = appState.selectedNoteIds.includes(note.id) ? "checked" : "";
-    item.innerHTML = `<div class="note-title-row"><div class="note-actions"><input type="checkbox" class="file-select" ${checked}></div><span class="note-meta">${createdAt}</span></div><p>${escapeHtml(note.text)}</p>${meaningLine}`;
+    item.innerHTML = `<div class="note-title-row"><div class="note-actions"><input type="checkbox" class="file-select" ${checked}></div><span class="note-meta">${createdAt}</span></div><p class="note-body">${escapeHtml(note.text)}</p>${meaningLine}`;
     const checkbox = item.querySelector("input[type=\"checkbox\"]");
     checkbox?.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -3155,7 +4725,7 @@ function createWorkspaceNoteItem(note) {
     item.addEventListener("click", () => toggleSelectNote(note.id));
     return item;
   }
-  item.innerHTML = `<div class="note-title-row"><div class="note-actions"><button class="btn-secondary">编辑</button><button class="note-delete-btn">删除</button></div><span class="note-meta">${createdAt}</span></div><p>${escapeHtml(note.text)}</p>${meaningLine}`;
+  item.innerHTML = `<div class="note-title-row"><div class="note-actions"><button class="btn-secondary">编辑</button><button class="note-delete-btn">删除</button></div><span class="note-meta">${createdAt}</span></div><p class="note-body">${escapeHtml(note.text)}</p>${meaningLine}`;
   const editBtn = item.querySelector(".btn-secondary");
   const delBtn = item.querySelector(".note-delete-btn");
   editBtn?.addEventListener("click", (event) => {
@@ -3202,8 +4772,13 @@ function startEditWorkspaceNote(container, note) {
       showAppAlert("请输入笔记内容。");
       return;
     }
-    note.text = nextText;
-    note.meaning = nextMeaning;
+    const fileId = appState.activeFileId;
+    const notes = appState.workspaceData[fileId]?.notes || [];
+    const original = notes.find((n) => n.id === note.id);
+    if (original) {
+      original.text = nextText;
+      original.meaning = nextMeaning;
+    }
     renderWorkspaceNotes();
     saveWorkspaceProgress(false);
   });
@@ -3247,24 +4822,29 @@ function toggleSelectNote(noteId) {
 
 function getVisibleNotesForSelection() {
   const fileId = appState.activeFileId;
+  const page = getActiveWorkspacePage();
+  const highlights = (page?.highlights || []).map((h) => ({ type: "highlight", ...h }));
   const rawNotes = appState.workspaceData[fileId]?.notes || [];
+  const notes = rawNotes.map((n) => ({ type: "note", ...n }));
+  const merged = [...highlights, ...notes];
   const query = String(appState.notesSearchQuery || "").trim().toLowerCase();
-  const filtered = rawNotes.filter((note) => {
+  const filtered = merged.filter((entry) => {
     if (!query) return true;
-    const text = String(note?.text || "").toLowerCase();
-    const meaning = String(note?.meaning || "").toLowerCase();
+    const text = String(entry?.text || "").toLowerCase();
+    const meaning = String(entry?.meaning || "").toLowerCase();
     return text.includes(query) || meaning.includes(query);
   });
   const sort = appState.notesSort === "oldest" ? "oldest" : "newest";
   filtered.sort((a, b) => {
-    const diff = getNoteTimestamp(b) - getNoteTimestamp(a);
+    const diff = getUnifiedTimestamp(b) - getUnifiedTimestamp(a);
     return sort === "newest" ? diff : -diff;
   });
   const pageSize = sanitizeCount(String(appState.notesPageSize || 10), 6, 16);
   const currentPage = Math.max(1, appState.notesPage || 1);
   const startIndex = (currentPage - 1) * pageSize;
   const endIndex = startIndex + pageSize;
-  return filtered.slice(startIndex, endIndex);
+  const paged = filtered.slice(startIndex, endIndex);
+  return paged.filter((e) => e.type === "note");
 }
 
 function selectAllNotes() {
@@ -3579,21 +5159,25 @@ function deleteVocabById(vocabId) {
 }
 
 /**
- * 渲染当前页的高亮痕迹列表。
+ * 删除当前页指定 id 的高亮，并刷新页面高亮层与列表。
+ * @param {string} highlightId 高亮 id（如 hl-xxx）。
  */
-function renderHighlightList() {
-  const container = document.getElementById("highlight-list");
-  if (!container) return;
+function deleteHighlightById(highlightId) {
+  if (!highlightId) return;
   const page = getActiveWorkspacePage();
-  const highlights = page?.highlights || [];
-  if (highlights.length === 0) {
-    container.innerHTML = '<div class="note-item"><h4>高亮痕迹</h4><p>暂无高亮，选中文本后点击“高亮”。</p></div>';
-    return;
+  if (!page || !Array.isArray(page.highlights)) return;
+  const before = page.highlights.length;
+  page.highlights = page.highlights.filter((h) => h.id !== highlightId);
+  if (page.highlights.length === before) return;
+  const textLayer = document.querySelector("#page-content .pdf-text-layer");
+  if (textLayer) {
+    applyPdfHighlightsToLayer(textLayer, page.highlights);
   }
-  container.innerHTML = highlights
-    .map((item) => `<div class="note-item"><h4>高亮摘录</h4><p>${escapeHtml(item.text)}</p><p class="note-meta">${escapeHtml(item.createdAt || "")}</p></div>`)
-    .join("");
+  renderWorkspaceNotes();
+  saveWorkspaceProgress(false);
 }
+
+window.deleteHighlightById = deleteHighlightById;
 
 /**
  * 获取当前活动文件与页码对应的页面对象。
@@ -3661,6 +5245,7 @@ function toggleLearningComplete() {
 function saveWorkspaceProgress(notify = true) {
   const fileId = appState.activeFileId;
   const pageContent = document.getElementById("page-content");
+  const file = appState.libraryFiles.find((item) => item.id === fileId);
   if (!fileId || !pageContent) return;
   if (!appState.workspaceData[fileId]) {
     appState.workspaceData[fileId] = {
@@ -3671,7 +5256,7 @@ function saveWorkspaceProgress(notify = true) {
     };
   }
   const page = getActiveWorkspacePage();
-  if (page) {
+  if (page && !(file?.type === "PDF" && pageContent.dataset.pdfView === "true")) {
     page.html = pageContent.innerHTML;
   }
   syncRecentStudyToQuestionBank(fileId);
@@ -4048,6 +5633,7 @@ async function deleteFile(fileId) {
   if (!ok) return;
   appState.libraryFiles = appState.libraryFiles.filter((item) => item.id !== fileId);
   delete appState.workspaceData[fileId];
+  clearPdfDocCache(fileId);
   await deletePdfBlob(fileId);
   if (appState.activeFileId === fileId) appState.activeFileId = appState.libraryFiles[0]?.id || "";
   renderLibraryCategoryTree();
@@ -6212,8 +7798,18 @@ function renderQuestionList(source, count, random, sourceFilter = "all") {
     const notesPanel = document.createElement("div");
     notesPanel.className = "question-notes-panel";
     notesPanel.hidden = true;
+    const noteDisplay = document.createElement("div");
+    noteDisplay.className = "question-note-display";
+    const normalizedNote = String(item.note || "").trim();
+    noteDisplay.textContent = normalizedNote || "暂无笔记，点击下方按钮添加。";
+    if (!normalizedNote) noteDisplay.classList.add("is-empty");
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "btn-secondary question-note-edit-btn";
+    editBtn.textContent = normalizedNote ? "编辑笔记" : "添加笔记";
     const editor = document.createElement("div");
     editor.className = "question-editor question-notes-only";
+    editor.hidden = true;
     const noteInput = document.createElement("textarea");
     noteInput.className = "setting-input";
     noteInput.value = item.note || "";
@@ -6226,6 +7822,19 @@ function renderQuestionList(source, count, random, sourceFilter = "all") {
     saveBtn.addEventListener("click", () => {
       item.note = noteInput.value.trim();
       persistLocalState();
+      const latestNote = String(item.note || "").trim();
+      noteDisplay.textContent = latestNote || "暂无笔记，点击下方按钮添加。";
+      noteDisplay.classList.toggle("is-empty", !latestNote);
+      editor.hidden = true;
+      noteDisplay.hidden = false;
+      editBtn.textContent = latestNote ? "编辑笔记" : "添加笔记";
+    });
+    editBtn.addEventListener("click", () => {
+      const willEdit = editor.hidden;
+      editor.hidden = !willEdit;
+      noteDisplay.hidden = willEdit;
+      editBtn.textContent = willEdit ? "取消编辑" : (String(item.note || "").trim() ? "编辑笔记" : "添加笔记");
+      if (willEdit) noteInput.focus();
     });
     notesToggleBtn.addEventListener("click", () => {
       const show = notesPanel.hidden;
@@ -6234,6 +7843,8 @@ function renderQuestionList(source, count, random, sourceFilter = "all") {
     });
     editor.appendChild(noteInput);
     editor.appendChild(saveBtn);
+    notesPanel.appendChild(noteDisplay);
+    notesPanel.appendChild(editBtn);
     notesPanel.appendChild(editor);
     notesToggleRow.appendChild(notesToggleBtn);
     detail.appendChild(answer);
@@ -6374,6 +7985,112 @@ function syncPageIndicator() {
   const indicator = document.getElementById("page-indicator");
   if (!indicator) return;
   indicator.textContent = `${appState.currentDocPage} / ${appState.totalDocPages}`;
+}
+
+function syncWorkspaceZoomUi(file) {
+  const label = document.getElementById("workspace-zoom-indicator");
+  const minusBtn = document.getElementById("workspace-zoom-out-btn");
+  const plusBtn = document.getElementById("workspace-zoom-in-btn");
+  const resetBtn = document.getElementById("workspace-zoom-reset-btn");
+  if (!label || !minusBtn || !plusBtn || !resetBtn) return;
+  const activeFile = file || appState.libraryFiles.find((item) => item.id === appState.activeFileId);
+  const isPdf = activeFile?.type === "PDF" && appState.workspaceViewMode !== "text";
+  label.textContent = isPdf ? `${Math.round(appState.workspacePdfZoom)}% · Ctrl+滚轮` : "文本";
+  minusBtn.disabled = !isPdf;
+  plusBtn.disabled = !isPdf;
+  resetBtn.disabled = !isPdf;
+}
+
+function syncHighlightColorPicker() {
+  const wrap = document.getElementById("highlight-color-picker");
+  if (!wrap) return;
+  const current = HIGHLIGHT_COLORS[appState.highlightColor] ? appState.highlightColor : "yellow";
+  wrap.querySelectorAll(".color-dot").forEach((btn) => {
+    const isActive = btn.dataset.color === current;
+    btn.classList.toggle("active", isActive);
+  });
+}
+
+function syncHighlightStylePicker() {
+  const wrap = document.getElementById("highlight-style-picker");
+  if (!wrap) return;
+  const current = HIGHLIGHT_STYLES[appState.highlightStyle] ? appState.highlightStyle : "fill";
+  wrap.querySelectorAll(".style-dot").forEach((btn) => {
+    const isActive = btn.dataset.style === current;
+    btn.classList.toggle("active", isActive);
+  });
+}
+
+function setHighlightColor(color) {
+  if (!HIGHLIGHT_COLORS[color]) return;
+  appState.highlightColor = color;
+  syncHighlightColorPicker();
+  persistLocalState();
+}
+
+function setHighlightStyle(style) {
+  if (!HIGHLIGHT_STYLES[style]) return;
+  appState.highlightStyle = style;
+  syncHighlightStylePicker();
+  persistLocalState();
+}
+
+function bindWorkspaceZoomWheel() {
+  const reader = document.getElementById("reader-content");
+  if (!reader || reader.dataset.zoomWheelBound === "true") return;
+  reader.dataset.zoomWheelBound = "true";
+  reader.addEventListener("wheel", (event) => {
+    const file = appState.libraryFiles.find((item) => item.id === appState.activeFileId);
+    const isPdf = file?.type === "PDF" && appState.workspaceViewMode !== "text";
+
+    if (event.ctrlKey) {
+      if (!isPdf) return;
+      event.preventDefault();
+      if (!runtimeState.ui.zoomTipShown) {
+        runtimeState.ui.zoomTipShown = true;
+        showAppAlert("已启用 Ctrl + 滚轮 缩放。你也可以用右上角的 +/- 按钮。", "快捷缩放");
+      }
+      const nextZoom = event.deltaY < 0 ? appState.workspacePdfZoom + 10 : appState.workspacePdfZoom - 10;
+      const normalized = Math.max(40, Math.min(260, Math.round(nextZoom / 5) * 5));
+      if (normalized === appState.workspacePdfZoom) return;
+      appState.workspacePdfZoom = normalized;
+      persistLocalState();
+      syncWorkspaceZoomUi(file);
+      if (runtimeState.ui.zoomTimer) {
+        clearTimeout(runtimeState.ui.zoomTimer);
+      }
+      runtimeState.ui.zoomTimer = setTimeout(() => {
+        runtimeState.ui.zoomTimer = null;
+        void loadActiveWorkspaceFile();
+      }, 90);
+      return;
+    }
+
+  }, { passive: false });
+}
+
+async function zoomWorkspaceOut() {
+  const file = appState.libraryFiles.find((item) => item.id === appState.activeFileId);
+  if (!file || file.type !== "PDF" || appState.workspaceViewMode === "text") return;
+  appState.workspacePdfZoom = Math.max(40, Math.round((appState.workspacePdfZoom - 10) / 5) * 5);
+  persistLocalState();
+  await loadActiveWorkspaceFile();
+}
+
+async function zoomWorkspaceIn() {
+  const file = appState.libraryFiles.find((item) => item.id === appState.activeFileId);
+  if (!file || file.type !== "PDF" || appState.workspaceViewMode === "text") return;
+  appState.workspacePdfZoom = Math.min(260, Math.round((appState.workspacePdfZoom + 10) / 5) * 5);
+  persistLocalState();
+  await loadActiveWorkspaceFile();
+}
+
+async function resetWorkspaceZoom() {
+  const file = appState.libraryFiles.find((item) => item.id === appState.activeFileId);
+  if (!file || file.type !== "PDF" || appState.workspaceViewMode === "text") return;
+  appState.workspacePdfZoom = 100;
+  persistLocalState();
+  await loadActiveWorkspaceFile();
 }
 
 /**
@@ -6543,14 +8260,16 @@ function syncChatModeTip() {
  * 更新首页统计卡片。
  */
 function updateStats() {
-  const doneTodo = appState.todayTodos.filter((item) => item.done).length;
-  const doneTask = appState.scheduleTasks.filter((item) => item.status === "done").length;
+  const today = toLocalDateString(new Date());
+  const manual = getTodayManualTodos();
+  const scheduleToday = getScheduleTasksForDate(today);
+  const doneTodo = manual.filter((item) => item.done).length + scheduleToday.filter((item) => item.status === "done").length;
   const vocabCount = Object.values(appState.workspaceData)
     .reduce((sum, data) => sum + (Array.isArray(data?.vocab) ? data.vocab.length : 0), 0);
   setText("stat-files", String(appState.libraryFiles.length));
   setText("stat-vocab", String(vocabCount));
   setText("stat-notes", String(Object.values(appState.workspaceData).reduce((sum, data) => sum + (data.notes?.length || 0), 0)));
-  setText("stat-tasks", String(doneTodo + doneTask));
+  setText("stat-tasks", String(doneTodo));
 }
 
 /**
@@ -6608,11 +8327,12 @@ function startOfDay(date) {
 }
 
 /**
- * 保存本地状态到 localStorage。
+ * 生成可持久化状态快照（本地与后端共用）。
+ * @returns {Record<string, any>} 序列化后的状态。
  */
-function persistLocalState() {
+function buildPersistableState() {
   const isGuest = !runtimeState.auth.user?.id;
-  const payload = {
+  return {
     themeMode: appState.themeMode,
     themeColor: appState.themeColor,
     autoSyncQuestionBank: appState.autoSyncQuestionBank,
@@ -6630,6 +8350,13 @@ function persistLocalState() {
     llmMaxTokens: appState.llmMaxTokens,
     llmStream: appState.llmStream,
     llmSystemPrompt: appState.llmSystemPrompt,
+    workspaceViewMode: appState.workspaceViewMode,
+    workspacePdfZoom: appState.workspacePdfZoom,
+    workspaceBrushMode: appState.workspaceBrushMode,
+    workspaceBrushColor: appState.workspaceBrushColor,
+    highlightColor: appState.highlightColor,
+    highlightStyle: appState.highlightStyle,
+    onboarding: isGuest ? { isNewUser: false, globalDone: false, pageSeen: {} } : appState.onboarding,
     selectedCalendarDate: appState.selectedCalendarDate,
     yearGoals: isGuest ? [] : appState.yearGoals,
     quarterGoals: isGuest ? [] : appState.quarterGoals,
@@ -6649,14 +8376,127 @@ function persistLocalState() {
     libraryFiles: isGuest ? [] : appState.libraryFiles,
     workspaceData: isGuest ? {} : appState.workspaceData,
     todayTodos: isGuest ? [] : appState.todayTodos,
+    todayTodosByDate: isGuest ? {} : appState.todayTodosByDate,
     scheduleTasks: isGuest ? [] : appState.scheduleTasks,
     learningRecords: isGuest ? [] : appState.learningRecords,
     questionBank: isGuest ? [] : appState.questionBank,
     questionCategories: isGuest ? [...DEFAULT_QUESTION_CATEGORIES] : appState.questionCategories,
   };
+}
+
+/**
+ * 保存本地状态到 localStorage。
+ */
+function persistLocalState() {
+  const payload = buildPersistableState();
   localStorage.setItem(getUserScopedStateStorageKey(), JSON.stringify(payload));
+  snapshotTodayCompletion();
   scheduleBackendSync();
 }
+
+function getDailyCompletionKey(dateStr) {
+  return getUserScopedStateStorageKey() + "_daily_" + dateStr;
+}
+
+function getBannerDismissedKey() {
+  return getUserScopedStateStorageKey() + "_bannerDismissed";
+}
+
+/**
+ * 将当日待办完成度写入 localStorage，供次日展示鼓励/赞扬用。
+ */
+function snapshotTodayCompletion() {
+  const today = toLocalDateString(new Date());
+  const scheduleTasks = getScheduleTasksForDate(today);
+  const manual = getTodayManualTodos();
+  const total = scheduleTasks.length + manual.length;
+  const done = scheduleTasks.filter((t) => t.status === "done").length + manual.filter((t) => t.done).length;
+  try {
+    localStorage.setItem(getDailyCompletionKey(today), JSON.stringify({ total, done }));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+/**
+ * 根据昨日完成度生成鼓励/赞扬文案；无昨日数据时提示安排今日任务。
+ * @returns {{ text: string, variant: string }} 文案与样式变体（praise | encourage | plan）。
+ */
+function getDailyFeedbackContent() {
+  const today = toLocalDateString(new Date());
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = toLocalDateString(yesterday);
+  let raw = null;
+  try {
+    raw = localStorage.getItem(getDailyCompletionKey(yesterdayStr));
+  } catch {
+    // ignore
+  }
+  if (!raw) {
+    return { text: "新的一天开始啦，安排一下今天要做的事吧～", variant: "plan" };
+  }
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return { text: "新的一天开始啦，安排一下今天要做的事吧～", variant: "plan" };
+  }
+  const total = Number(data.total) || 0;
+  const done = Number(data.done) || 0;
+  if (total === 0) {
+    return { text: "昨天没有待办记录。今天不妨在日程里加几件小事，一步步完成～", variant: "plan" };
+  }
+  const rate = done / total;
+  if (rate >= 1) {
+    return { text: "昨天待办全部完成，太棒了！继续保持～", variant: "praise" };
+  }
+  if (rate >= 0.5) {
+    return { text: `昨天完成了 ${done}/${total} 项待办，不错哦！今天也加油～`, variant: "encourage" };
+  }
+  return { text: `昨天还有一点没做完（${done}/${total}）。今天从一件小事开始吧～`, variant: "encourage" };
+}
+
+/**
+ * 若今日未关闭过横幅，则展示昨日完成度反馈（鼓励/赞扬）或安排今日任务提示。
+ */
+function maybeShowDailyFeedbackBanner() {
+  const dashboard = document.getElementById("page-dashboard");
+  if (!dashboard?.classList.contains("active")) return;
+  const today = toLocalDateString(new Date());
+  try {
+    if (localStorage.getItem(getBannerDismissedKey()) === today) return;
+  } catch {
+    return;
+  }
+  const banner = document.getElementById("daily-feedback-banner");
+  const textEl = banner?.querySelector(".daily-feedback-text");
+  if (!banner || !textEl) return;
+  const { text, variant } = getDailyFeedbackContent();
+  textEl.textContent = text;
+  banner.className = "daily-feedback-banner daily-feedback-banner--" + variant;
+  banner.setAttribute("aria-hidden", "false");
+  banner.classList.remove("hidden");
+}
+
+/**
+ * 关闭每日反馈横幅并记录今日已关闭，当日不再展示。
+ */
+function dismissDailyFeedbackBanner() {
+  const today = toLocalDateString(new Date());
+  try {
+    localStorage.setItem(getBannerDismissedKey(), today);
+  } catch {
+    // ignore
+  }
+  const banner = document.getElementById("daily-feedback-banner");
+  if (banner) {
+    banner.classList.add("hidden");
+    banner.setAttribute("aria-hidden", "true");
+  }
+}
+
+window.dismissDailyFeedbackBanner = dismissDailyFeedbackBanner;
 
 /**
  * 从 localStorage 恢复状态。
@@ -6675,7 +8515,8 @@ function restoreLocalState() {
   if (!raw) return;
   try {
     const data = JSON.parse(raw);
-    if (typeof data.themeMode === "string") appState.themeMode = data.themeMode;
+    if (typeof data.themeMode === "string" && data.themeMode === "light") appState.themeMode = "light";
+    else appState.themeMode = "light";
     if (typeof data.themeColor === "string") appState.themeColor = data.themeColor;
     if (typeof data.autoSyncQuestionBank === "boolean") appState.autoSyncQuestionBank = data.autoSyncQuestionBank;
     if (typeof data.autoSyncMaxPerSave === "number") appState.autoSyncMaxPerSave = sanitizeCount(String(data.autoSyncMaxPerSave), 5, 20);
@@ -6692,6 +8533,31 @@ function restoreLocalState() {
     if (typeof data.llmMaxTokens === "number") appState.llmMaxTokens = sanitizeCount(String(data.llmMaxTokens), 1024, 8192);
     if (typeof data.llmStream === "boolean") appState.llmStream = data.llmStream;
     if (typeof data.llmSystemPrompt === "string") appState.llmSystemPrompt = data.llmSystemPrompt;
+    if (typeof data.workspaceViewMode === "string") {
+      appState.workspaceViewMode = data.workspaceViewMode === "text" ? "text" : "original";
+    }
+    if (typeof data.workspacePdfZoom === "number") {
+      appState.workspacePdfZoom = Math.max(40, Math.min(260, data.workspacePdfZoom));
+    }
+    if (typeof data.workspaceBrushMode === "string" && (data.workspaceBrushMode === "free" || data.workspaceBrushMode === "rect")) {
+      appState.workspaceBrushMode = data.workspaceBrushMode;
+    }
+    if (typeof data.workspaceBrushColor === "string" && /^#[0-9a-fA-F]{3,8}$/.test(data.workspaceBrushColor)) {
+      appState.workspaceBrushColor = data.workspaceBrushColor;
+    }
+    if (typeof data.highlightColor === "string" && HIGHLIGHT_COLORS[data.highlightColor]) {
+      appState.highlightColor = data.highlightColor;
+    }
+    if (typeof data.highlightStyle === "string" && HIGHLIGHT_STYLES[data.highlightStyle]) {
+      appState.highlightStyle = data.highlightStyle;
+    }
+    if (data.onboarding && typeof data.onboarding === "object") {
+      appState.onboarding.isNewUser = Boolean(data.onboarding.isNewUser);
+      appState.onboarding.globalDone = Boolean(data.onboarding.globalDone);
+      appState.onboarding.pageSeen = (data.onboarding.pageSeen && typeof data.onboarding.pageSeen === "object")
+        ? data.onboarding.pageSeen
+        : {};
+    }
     if (typeof data.selectedCategoryId === "string") appState.selectedCategoryId = data.selectedCategoryId;
     if (typeof data.selectedCalendarDate === "string") appState.selectedCalendarDate = data.selectedCalendarDate;
     if (typeof data.activeFileId === "string") appState.activeFileId = data.activeFileId;
@@ -6709,9 +8575,12 @@ function restoreLocalState() {
     if (Array.isArray(data.collapsedCategoryIds)) appState.collapsedCategoryIds = data.collapsedCategoryIds;
     if (Array.isArray(data.libraryCategories)) appState.libraryCategories = data.libraryCategories;
     if (Array.isArray(data.libraryFiles)) appState.libraryFiles = data.libraryFiles;
-    if (data.workspaceData && typeof data.workspaceData === "object") appState.workspaceData = data.workspaceData;
-    if (Array.isArray(data.todayTodos)) appState.todayTodos = data.todayTodos;
-    if (Array.isArray(data.scheduleTasks)) appState.scheduleTasks = data.scheduleTasks;
+  if (data.workspaceData && typeof data.workspaceData === "object") appState.workspaceData = data.workspaceData;
+  if (Array.isArray(data.todayTodos)) appState.todayTodos = data.todayTodos;
+  if (data.todayTodosByDate && typeof data.todayTodosByDate === "object") {
+    appState.todayTodosByDate = data.todayTodosByDate;
+  }
+  if (Array.isArray(data.scheduleTasks)) appState.scheduleTasks = data.scheduleTasks;
     if (Array.isArray(data.learningRecords)) appState.learningRecords = data.learningRecords;
     if (Array.isArray(data.questionBank)) appState.questionBank = data.questionBank;
     if (Array.isArray(data.questionCategories)) appState.questionCategories = data.questionCategories;
@@ -6791,6 +8660,11 @@ window.playLofi = playLofi;
 window.stopLofi = stopLofi;
 window.prevPage = prevPage;
 window.nextPage = nextPage;
+window.zoomWorkspaceOut = zoomWorkspaceOut;
+window.zoomWorkspaceIn = zoomWorkspaceIn;
+window.resetWorkspaceZoom = resetWorkspaceZoom;
+window.setHighlightColor = setHighlightColor;
+window.setHighlightStyle = setHighlightStyle;
 window.sendChat = sendChat;
 window.clearChatMessages = clearChatMessages;
 window.switchChatSession = switchChatSession;
@@ -6810,5 +8684,8 @@ window.saveWorkspaceProgress = saveWorkspaceProgress;
 window.extractArticleToQuestionBank = extractArticleToQuestionBank;
 window.confirmExtractToQuestionBank = confirmExtractToQuestionBank;
 window.toggleExtractKind = toggleExtractKind;
+window.onboardingPrev = onboardingPrev;
+window.onboardingNext = onboardingNext;
+window.onboardingSkip = onboardingSkip;
 
 document.addEventListener("DOMContentLoaded", initApp);

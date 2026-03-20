@@ -50,6 +50,7 @@ const DATA_DIR = path.join(RUNTIME_DIR, "data");
 const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 const LOG_DIR = path.join(DATA_DIR, "logs");
 const BACKUP_DIR = path.join(DATA_DIR, "backups");
+const DEFAULT_ASSET_DIR = path.join(DATA_DIR, "defaults");
 const DB_PATH = path.join(DATA_DIR, "clawmind.db");
 const DEFAULT_USER_ID = "local-user";
 const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -66,6 +67,9 @@ const ENABLE_ACCESS_LOG = String(process.env.ENABLE_ACCESS_LOG || "true").toLowe
 const BACKUP_INTERVAL_MINUTES = Number(process.env.BACKUP_INTERVAL_MINUTES || 360);
 const BACKUP_RETENTION_DAYS = Number(process.env.BACKUP_RETENTION_DAYS || 7);
 const MANUAL_BACKUP_TOKEN = String(process.env.MANUAL_BACKUP_TOKEN || "").trim();
+const MAX_STATE_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_PDF_SOURCE_DIR = "C:\\Users\\18072\\Desktop\\clawMind\\data";
+const DEFAULT_PDF_STORAGE_PATH = path.join(DEFAULT_ASSET_DIR, "default-starter.pdf");
 // Chat configuration
 const OPENAI_BASE_URL = String(process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const OPENAI_API_KEY = String(process.env.OPENAI_API_KEY || "");
@@ -81,6 +85,7 @@ function ensureDirs() {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
+  fs.mkdirSync(DEFAULT_ASSET_DIR, { recursive: true });
 }
 
 /**
@@ -93,6 +98,76 @@ function createDb() {
 }
 
 const db = createDb();
+
+/**
+ * 解析默认 PDF 源文件路径（默认目录下第一份 PDF）。
+ * @returns {Promise<string>} 绝对路径或空字符串。
+ */
+async function resolveDefaultPdfSourcePath() {
+  if (!DEFAULT_PDF_SOURCE_DIR) return "";
+  try {
+    const entries = await fs.promises.readdir(DEFAULT_PDF_SOURCE_DIR).catch(() => []);
+    const pdfs = entries.filter((name) => String(name || "").toLowerCase().endsWith(".pdf"));
+    if (pdfs.length === 0) return "";
+    pdfs.sort((a, b) => a.localeCompare(b));
+    return path.join(DEFAULT_PDF_SOURCE_DIR, pdfs[0]);
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 确保默认 PDF 已复制到后端目录。
+ * @returns {Promise<void>}
+ */
+async function ensureDefaultPdfAsset() {
+  try {
+    const sourcePath = await resolveDefaultPdfSourcePath();
+    if (!sourcePath || !fs.existsSync(sourcePath)) return;
+    ensureDirs();
+    const targetExists = fs.existsSync(DEFAULT_PDF_STORAGE_PATH);
+    if (targetExists) {
+      const sourceStat = await fs.promises.stat(sourcePath).catch(() => null);
+      const targetStat = await fs.promises.stat(DEFAULT_PDF_STORAGE_PATH).catch(() => null);
+      if (sourceStat && targetStat && sourceStat.mtimeMs <= targetStat.mtimeMs) {
+        return;
+      }
+    }
+    await fs.promises.copyFile(sourcePath, DEFAULT_PDF_STORAGE_PATH);
+  } catch {
+  }
+}
+
+function getDefaultPdfDisplayName(sourcePath) {
+  const safePath = String(sourcePath || "");
+  if (!safePath) return "默认学习资料.pdf";
+  const name = path.basename(safePath);
+  return name.endsWith(".pdf") ? name : `${name}.pdf`;
+}
+
+async function getDefaultPdfMeta() {
+  try {
+    const sourcePath = await resolveDefaultPdfSourcePath();
+    const exists = fs.existsSync(DEFAULT_PDF_STORAGE_PATH);
+    if (!exists) {
+      await ensureDefaultPdfAsset();
+    }
+    if (!fs.existsSync(DEFAULT_PDF_STORAGE_PATH)) {
+      return { available: false };
+    }
+    const stat = await fs.promises.stat(DEFAULT_PDF_STORAGE_PATH);
+    return {
+      available: true,
+      name: getDefaultPdfDisplayName(sourcePath),
+      size: stat.size,
+      updatedAt: new Date(stat.mtimeMs).toISOString(),
+      path: DEFAULT_PDF_STORAGE_PATH,
+      sourcePath,
+    };
+  } catch {
+    return { available: false };
+  }
+}
 
 /**
  * 执行 SQL（无返回行）。
@@ -594,6 +669,13 @@ async function initDb() {
     ON learning_records_v2(user_id, doc_name)
   `);
   await run(`
+    CREATE TABLE IF NOT EXISTS user_state_snapshots (
+      user_id TEXT PRIMARY KEY,
+      state_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  await run(`
     CREATE TABLE IF NOT EXISTS rag_sessions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -779,7 +861,39 @@ app.get("/api/health", (_req, res) => {
       intervalMinutes: BACKUP_INTERVAL_MINUTES,
       retentionDays: BACKUP_RETENTION_DAYS,
     },
+    defaultFile: {
+      sourceDir: DEFAULT_PDF_SOURCE_DIR,
+      storagePath: DEFAULT_PDF_STORAGE_PATH,
+    },
   });
+});
+
+/**
+ * 默认学习资料（元信息）。
+ */
+app.get("/api/library/default-file", requireAuth, async (_req, res) => {
+  const meta = await getDefaultPdfMeta();
+  res.json({
+    ok: true,
+    available: Boolean(meta.available),
+    name: meta.name || "",
+    size: meta.size || 0,
+    updatedAt: meta.updatedAt || "",
+  });
+});
+
+/**
+ * 默认学习资料（文件内容）。
+ */
+app.get("/api/library/default-file/content", requireAuth, async (_req, res) => {
+  const meta = await getDefaultPdfMeta();
+  if (!meta.available || !meta.path) {
+    res.status(404).json({ ok: false, message: "默认学习资料不存在" });
+    return;
+  }
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(meta.name || "default.pdf")}"`);
+  res.sendFile(meta.path);
 });
 
 /**
@@ -898,6 +1012,20 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
 app.get("/api/state", requireAuth, async (_req, res) => {
   try {
     const userId = String(_req.authUser?.id || DEFAULT_USER_ID);
+    const snapshotRow = await get(
+      "SELECT state_json AS stateJson FROM user_state_snapshots WHERE user_id = ?",
+      [userId],
+    );
+    let snapshotState = {};
+    if (snapshotRow?.stateJson) {
+      try {
+        const parsed = JSON.parse(String(snapshotRow.stateJson));
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          snapshotState = parsed;
+        }
+      } catch {
+      }
+    }
     const categories = await all(`
       SELECT id, name, icon, parent_id AS parentId
       FROM library_categories_v2
@@ -916,12 +1044,22 @@ app.get("/api/state", requireAuth, async (_req, res) => {
       WHERE user_id = ?
       ORDER BY doc_name ASC
     `, [userId]);
+    const mergedCategories = categories.length > 0
+      ? categories
+      : (Array.isArray(snapshotState.libraryCategories) ? snapshotState.libraryCategories : []);
+    const mergedQuestionBank = questionBank.length > 0
+      ? questionBank
+      : (Array.isArray(snapshotState.questionBank) ? snapshotState.questionBank : []);
+    const mergedLearningRecords = learningRecords.length > 0
+      ? learningRecords
+      : (Array.isArray(snapshotState.learningRecords) ? snapshotState.learningRecords : []);
     res.json({
       ok: true,
       state: {
-        libraryCategories: categories,
-        questionBank,
-        learningRecords,
+        ...snapshotState,
+        libraryCategories: mergedCategories,
+        questionBank: mergedQuestionBank,
+        learningRecords: mergedLearningRecords,
       },
     });
   } catch (error) {
@@ -934,10 +1072,16 @@ app.get("/api/state", requireAuth, async (_req, res) => {
  */
 app.put("/api/state", requireAuth, async (req, res) => {
   const userId = String(req.authUser?.id || DEFAULT_USER_ID);
-  const payload = req.body || {};
+  const payload = (req.body && typeof req.body === "object" && !Array.isArray(req.body)) ? req.body : {};
   const categories = Array.isArray(payload.libraryCategories) ? payload.libraryCategories : [];
   const questionBank = Array.isArray(payload.questionBank) ? payload.questionBank : [];
   const learningRecords = Array.isArray(payload.learningRecords) ? payload.learningRecords : [];
+  const snapshotJson = JSON.stringify(payload);
+  if (Buffer.byteLength(snapshotJson, "utf8") > MAX_STATE_SNAPSHOT_BYTES) {
+    res.status(413).json({ ok: false, message: "状态快照过大，请先清理后再同步" });
+    return;
+  }
+  const nowIso = new Date().toISOString();
 
   try {
     await run("BEGIN TRANSACTION");
@@ -995,6 +1139,14 @@ app.put("/api/state", requireAuth, async (req, res) => {
         ],
       );
     }
+    await run(
+      `INSERT INTO user_state_snapshots(user_id, state_json, updated_at)
+       VALUES(?, ?, ?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         state_json = excluded.state_json,
+         updated_at = excluded.updated_at`,
+      [userId, snapshotJson, nowIso],
+    );
 
     await run("COMMIT");
     res.json({ ok: true });
@@ -1682,6 +1834,7 @@ initDb()
   .then(() => {
     startBackupScheduler();
     void cleanupOldBackups();
+    void ensureDefaultPdfAsset();
     app.listen(PORT, HOST, () => {
       // eslint-disable-next-line no-console
       console.log(`[ClawMind] backend running at http://${HOST}:${PORT}`);
